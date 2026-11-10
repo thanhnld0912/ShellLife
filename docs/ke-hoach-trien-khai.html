@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hợp Đồng 30 Đêm · Kế hoạch triển khai</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<style>
+/* Một cột theo dõi tiến độ. Tông siêu thị ban đêm như các trang concept. */
+:root{
+  --night:#0d1112; --floor:#151b1c; --raise:#1b2324; --line:#2c3738;
+  --fluoro:#d8f3ec; --text:#c9d4d1; --dim:#8a9995;
+  --tag:#f2c94c; --alarm:#e5534b; --ok:#7ed492; --cold:#6fc3df;
+  --display:"Be Vietnam Pro","Segoe UI",Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--night);color:var(--text);font:400 16px/1.6 var(--display);
+  padding:40px max(16px,env(safe-area-inset-right,0px)) 80px max(16px,env(safe-area-inset-left,0px))}
+.in{max-width:60rem;margin:0 auto}
+h1,h2,h3{color:var(--fluoro);margin:0;line-height:1.2;text-wrap:balance}
+h1{font-size:clamp(2rem,6vw,3.2rem);font-weight:800}
+h1 span{color:var(--tag)}
+h2{font-size:1.5rem;font-weight:800;margin:2.6rem 0 .6rem}
+h3{font-size:1.05rem}
+p{margin:.5rem 0}
+.k{font:600 .72rem/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.note{font-size:.88rem;color:var(--dim)}
+code{font-family:var(--mono);font-size:.86em;color:var(--fluoro)}
+a{color:var(--tag)}
+
+.overall{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.4rem 1.2rem;align-items:center;margin-top:1.4rem;background:var(--floor);padding:1rem 1.2rem;border-radius:6px}
+.overall b{font:800 2rem/1 var(--mono);color:var(--tag);font-variant-numeric:tabular-nums}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--tag);transition:width .3s}
+
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:4px;margin:1rem 0}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{text-align:left;padding:.55rem .75rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{background:var(--floor);font:600 .7rem/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+tr:last-child td{border-bottom:0}
+td:first-child{color:var(--fluoro);font-weight:600;white-space:nowrap}
+
+.phase{background:var(--floor);border-radius:6px;margin-top:1rem;border-left:4px solid var(--c,var(--line))}
+.phase[data-status="done"]{--c:var(--ok)}
+.phase[data-status="doing"]{--c:var(--tag)}
+.phase summary{list-style:none;cursor:pointer;padding:1rem 1.2rem;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.3rem 1rem;align-items:center}
+.phase summary::-webkit-details-marker{display:none}
+.phase summary:focus-visible{outline:2px solid var(--fluoro);outline-offset:-2px}
+.phase .meta{font:600 .74rem/1.4 var(--mono);color:var(--dim)}
+.phase .pbar{grid-column:1/-1}
+.status{font:700 .7rem/1 var(--mono);padding:.35rem .55rem;border-radius:3px;background:var(--raise);color:var(--dim);white-space:nowrap}
+.phase[data-status="done"] .status{color:var(--ok)}
+.phase[data-status="doing"] .status{color:var(--tag)}
+.body{padding:0 1.2rem 1.2rem}
+.q{background:var(--raise);border-radius:4px;padding:.7rem .9rem;margin:.4rem 0 .8rem}
+.q b{display:block;font:700 .7rem/1.4 var(--mono);color:var(--tag);letter-spacing:.08em;text-transform:uppercase}
+ul.tasks{list-style:none;padding:0;margin:0;display:grid;gap:.35rem}
+ul.tasks label{display:flex;gap:.7rem;align-items:flex-start;padding:.45rem .6rem;border-radius:4px;cursor:pointer}
+ul.tasks label:hover{background:var(--raise)}
+ul.tasks input{margin-top:.3rem;width:1.05rem;height:1.05rem;accent-color:var(--ok);flex:none}
+ul.tasks .who{font:600 .68rem/1.4 var(--mono);color:var(--dim);margin-left:.4rem;white-space:nowrap}
+ul.tasks .who.you{color:var(--cold)}
+ul.tasks input:checked + span{color:var(--dim);text-decoration:line-through;text-decoration-color:rgba(138,153,149,.6)}
+textarea{width:100%;min-height:5.5rem;margin-top:.6rem;background:var(--night);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:.6rem .7rem;font:400 .9rem/1.5 var(--display);resize:vertical}
+textarea:focus-visible{outline:2px solid var(--fluoro)}
+.howto{background:var(--floor);border-radius:6px;padding:1rem 1.2rem;margin-top:1rem}
+.howto pre{background:var(--night);border-radius:4px;padding:.8rem 1rem;overflow-x:auto;font:.85rem/1.6 var(--mono);color:var(--fluoro);margin:.5rem 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}
+.card{background:var(--floor);border-radius:6px;padding:1rem 1.2rem}
+.card ul{margin:.4rem 0 0;padding-left:1.1rem}
+.card li{margin:.25rem 0;font-size:.93rem}
+footer{margin-top:3rem;font-size:.82rem;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="in">
+  <p class="k">Kế hoạch triển khai · theo dõi tiến độ</p>
+  <h1>Hợp Đồng <span>30 Đêm</span></h1>
+  <p>Mỗi giai đoạn kết thúc bằng <b>một bản chơi được</b> và <b>một câu hỏi cần trả lời</b>. Câu trả lời là "chưa" thì sửa trước rồi mới làm tiếp.</p>
+  <p class="note">Ô đánh dấu và ghi chú được lưu trong trình duyệt này (localStorage). Mở trang bằng cùng trình duyệt để thấy lại tiến độ.</p>
+
+  <div class="overall" aria-live="polite">
+    <b id="overall-pct">0%</b>
+    <div><div class="bar"><i id="overall-bar"></i></div><div class="note" id="overall-text"></div></div>
+  </div>
+
+  <div class="howto">
+    <h3>Chạy bản thử hiện tại</h3>
+    <pre>cd E:\HopDong30Dem
+npm run dev</pre>
+    <p class="note">Mở địa chỉ hiện ra (thường là <code>http://localhost:5173</code>) bằng Chrome hoặc Edge. Kiểm tra logic không cần trình duyệt: <code>npm run sim:test</code>.</p>
+  </div>
+
+  <h2>Công nghệ đã chọn</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Phần</th><th>Dùng</th><th>Trạng thái</th></tr></thead>
+    <tbody>
+      <tr><td>Ngôn ngữ</td><td>TypeScript</td><td>Đang dùng</td></tr>
+      <tr><td>3D</td><td>Three.js 0.169</td><td>Đang dùng</td></tr>
+      <tr><td>Build</td><td>Vite 5</td><td>Đang dùng</td></tr>
+      <tr><td>Logic game</td><td><code>src/sim/</code>, không phụ thuộc Three.js, để chuyển lên server</td><td>Đang dùng</td></tr>
+      <tr><td>Server chơi mạng</td><td>Colyseus (Node.js)</td><td>Giai đoạn 2</td></tr>
+      <tr><td>Voice</td><td>WebRTC nối trực tiếp, cần TURN server</td><td>Giai đoạn 2</td></tr>
+      <tr><td>Model</td><td>Blender trên PC → <code>.glb</code> vào <code>public/models/</code></td><td>Giai đoạn 0–3</td></tr>
+    </tbody>
+  </table></div>
+
+  <h2>Các giai đoạn</h2>
+  <div id="phases"></div>
+
+  <h2>Model Blender</h2>
+  <p class="note">Làm trên PC. File <code>.blend</code> để ở OneDrive, file <code>.glb</code> xuất vào <code>E:\HopDong30Dem\public\models\</code>. Giữ low-poly, texture tối đa 1024×1024.</p>
+  <details class="phase" id="blender" open>
+    <summary><h3>Danh sách model theo thứ tự cần</h3><span class="status" id="blender-status"></span><div class="pbar bar"><i id="blender-bar"></i></div></summary>
+    <div class="body"><ul class="tasks" id="blender-list"></ul></div>
+  </details>
+
+  <h2>Cách làm việc mỗi tuần</h2>
+  <div class="grid">
+    <div class="card"><h3>Đầu tuần</h3><ul><li>Chọn 3–5 việc từ giai đoạn hiện tại.</li><li>Không nhận việc ngoài giai đoạn.</li></ul></div>
+    <div class="card"><h3>Cuối tuần</h3><ul><li>Chơi thử bản mới nhất.</li><li>Ghi 3 điều vui và 3 điều chán vào nhật ký bên dưới.</li></ul></div>
+    <div class="card"><h3>Ý tưởng mới</h3><ul><li>Ghi vào danh sách "để sau".</li><li>Không làm ngay.</li></ul></div>
+  </div>
+  <h3 style="margin-top:1.2rem">Nhật ký tuần</h3>
+  <textarea id="log" placeholder="Tuần 1: …&#10;Vui: …&#10;Chán: …"></textarea>
+  <h3 style="margin-top:1.2rem">Để sau</h3>
+  <textarea id="later" placeholder="Ý tưởng mới, chưa làm…"></textarea>
+
+  <h2>Rủi ro</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Rủi ro</th><th>Cách giảm</th></tr></thead>
+    <tbody>
+      <tr><td>Phần mạng quá khó</td><td>Logic đã viết tách khỏi đồ họa. Nếu giai đoạn 2 kẹt quá 2 tuần, dừng lại xem lại cách làm.</td></tr>
+      <tr><td>Voice không kết nối được</td><td>Chuẩn bị TURN server (coturn hoặc thuê dịch vụ).</td></tr>
+      <tr><td>Người Kiểm Kê không đáng sợ</td><td>Giai đoạn 1 kiểm tra riêng nó. Chỉnh âm thanh, tốc độ, tầm quét trước khi làm tiếp.</td></tr>
+      <tr><td>Máy laptop yếu</td><td>Blender làm trên PC. Laptop dùng để chạy thử hiệu năng.</td></tr>
+      <tr><td>Dự án phình to</td><td>Danh sách "để sau". Chỉ làm đúng giai đoạn hiện tại.</td></tr>
+      <tr><td>Thiếu người chơi thử</td><td>Rủ bạn bè từ giai đoạn 2, mỗi tuần một buổi cố định.</td></tr>
+      <tr><td>npm lỗi mạng ENETUNREACH</td><td>Chạy <code>$env:NODE_OPTIONS='--dns-result-order=ipv4first'</code> trước <code>npm install</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <footer>Tạo tháng 11/2026. Thời gian các giai đoạn là ước tính cho một người làm toàn thời gian có AI hỗ trợ; làm bán thời gian thì nhân khoảng 2 lần. Concept: <code>E:\ShelfLife-NghienCuu\shelf-life-concept-v8.html</code></footer>
+</div>
+
+<script>
+// Mỗi việc: [mã, nội dung, người làm ('ai' | 'ban' | 'chung'), đã xong sẵn?]
+const PHASES = [
+  { id:'p0', name:'Giai đoạn 0 · Chuẩn bị', time:'~1 tuần',
+    q:'Đi lại được trong siêu thị khối xám, và thấy một model từ Blender trong game.',
+    tasks:[
+      ['p0a','Tạo dự án Vite + Three.js + TypeScript ở E:\\HopDong30Dem','ai',1],
+      ['p0b','Siêu thị khối xám: sàn, tường, 4 dãy kệ, kho, kho lạnh, phòng điện, phòng nghỉ, quầy','ai',1],
+      ['p0c','Tách logic game (src/sim) khỏi đồ họa, có script kiểm tra logic','ai',1],
+      ['p0d','Khởi tạo Git trong thư mục dự án','ai',1],
+      ['p0e','Commit đầu tiên, tạo repo GitHub riêng tư và đẩy lên','ban',0],
+      ['p0f','Dựng 1 cái kệ trên PC, xuất .glb vào public/models/','ban',0],
+      ['p0g','Viết bộ nạp model .glb để thay kệ khối xám','ai',0],
+    ]},
+  { id:'p1', name:'Giai đoạn 1 · Người Kiểm Kê, chơi một mình', time:'~2–3 tuần',
+    q:'Chơi một mình, Người Kiểm Kê có đáng sợ không? Có hồi hộp khi tia đỏ lướt qua không?',
+    tasks:[
+      ['p1a','Điều khiển góc nhìn thứ nhất, va chạm, chạy gây tiếng động','ai',1],
+      ['p1b','Lấy thùng, xếp kệ thiếu hàng, máy quét (giữ F), ghi nhiệt độ tủ đông','ai',1],
+      ['p1c','Người Kiểm Kê: tuần tra, tia quét đỏ, đếm "Một… Hai…", đóng thùng sau 2 giây','ai',1],
+      ['p1d','Nghe tiếng động có sai số (điểm nghi ngờ), đi điều tra, ném lon để dụ','ai',1],
+      ['p1e','Chỉ tiêu công, việc an toàn chỉ tính nửa, phiếu việc (Tab)','ai',1],
+      ['p1f','Ca 4,5 phút, loa, điểm danh 06:00, phiếu đánh giá "chửi khéo", thẻ 3 lỗ','ai',1],
+      ['p1g','Cảnh đóng thùng, thùng mang tên trong kho, chế độ xem camera','ai',1],
+      ['p1h','5 đêm thử việc, nhóm ca trước đứng ngoài kính từ đêm 2, phiếu lương','ai',1],
+      ['p1i','Chơi thử trên laptop, ghi nhận xét vào nhật ký tuần','ban',0],
+      ['p1j','Chỉnh tốc độ, tầm quét, âm thanh theo nhận xét','chung',0],
+      ['p1k','Thay âm thanh tạm bằng âm thanh thật (đèn, bíp, tiếng đếm)','chung',0],
+      ['p1l','Đi theo dấu vết công việc (đưa sớm từ giai đoạn 4 nếu cần thêm áp lực)','ai',0],
+    ]},
+  { id:'p2', name:'Giai đoạn 2 · Chơi mạng 2 người, voice trong game', time:'~3–4 tuần',
+    q:'Chơi với một người bạn: có thì thầm với nhau không? Có ai la lên rồi cả hai cùng cười không?',
+    tasks:[
+      ['p2a','Server Colyseus, tạo phòng bằng mã mời','ai',0],
+      ['p2b','Chuyển src/sim lên server, đồng bộ người chơi, hàng, Người Kiểm Kê','ai',0],
+      ['p2c','Voice theo khoảng cách (WebRTC) và bộ đàm','ai',0],
+      ['p2d','Đo độ lớn giọng nói → tiếng động cho Người Kiểm Kê','ai',0],
+      ['p2e','Chế độ xem cho người chết, kênh "hội người trong thùng"','ai',0],
+      ['p2f','TURN server cho mạng khó kết nối','chung',0],
+      ['p2g','Chơi thử 2 người: laptop và PC, hoặc với một người bạn','ban',0],
+    ]},
+  { id:'p3', name:'Giai đoạn 3 · Bản chơi thử đầu tiên (đêm 1–2)', time:'~2–3 tuần',
+    q:'Cho 5–10 nhóm bạn chơi thử. Họ có muốn chơi tiếp đêm 3 không?',
+    tasks:[
+      ['p3a','4 vai xoay vòng, chuyển công, phiếu khen','ai',0],
+      ['p3b','Sổ tay nhân viên, máy in hóa đơn trong game','ai',0],
+      ['p3c','Kiểm đếm đột xuất, phòng điện bật tắt đèn','ai',0],
+      ['p3d','Ăn uống cơ bản: quét trước khi ăn, đói thì bụng kêu','ai',0],
+      ['p3e','Đêm 1 bàn giao ca với nhóm trước','ai',0],
+      ['p3f','Đồ họa thật lượt đầu từ Blender','ban',0],
+      ['p3g','Âm thanh lượt đầu','chung',0],
+      ['p3h','Chơi thử với 5–10 nhóm','ban',0],
+    ]},
+  { id:'p4', name:'Giai đoạn 4 · Đủ 5 đêm', time:'~4–6 tuần',
+    q:'Một lượt đủ 5 đêm có nằm trong 15–30 phút không? Đêm 5 có căng hơn hẳn đêm 1 không?',
+    tasks:[
+      ['p4a','Đi theo dấu vết, xe hàng 03:00 không đúng giờ','ai',0],
+      ['p4b','Mời lên văn phòng, đèn tắt theo độ lệch sổ','ai',0],
+      ['p4c','Hàng lạ 3 mức, 5 hiệu ứng, hàng lạ có lợi','ai',0],
+      ['p4d','Người thừa, kiểm kê viên thứ hai, các kết thúc','ai',0],
+      ['p4e','Mở rộng 3–4 người, cân bằng theo số người','ai',0],
+    ]},
+  { id:'p5', name:'Giai đoạn 5 · Hoàn thiện và phát hành thử', time:'~2–4 tuần',
+    q:'Game chạy mượt trên laptop cấu hình như máy hiện tại không? Lượt tải đầu dưới ~30 MB không?',
+    tasks:[
+      ['p5a','Hoàn thiện đồ họa, bake ánh sáng trên PC','ban',0],
+      ['p5b','Tối ưu tải và hiệu năng','ai',0],
+      ['p5c','Menu, cài đặt micro, âm lượng, tắt biên bản','ai',0],
+      ['p5d','Đăng lên web hoặc itch.io','chung',0],
+      ['p5e','Clip ngắn TikTok/YouTube','ban',0],
+    ]},
+];
+const BLENDER = [
+  ['b1','Bộ module: sàn, tường, cột, trần'],['b2','Kệ hàng (1 module, lặp lại)'],
+  ['b3','6 dạng hàng: hộp, lon, chai, gói, khay, túi'],['b4','Quầy, máy in hóa đơn, màn hình camera'],
+  ['b5','Tủ mát, cửa kính mặt tiền, cửa cuốn'],['b6','Kho, kho lạnh, thùng các-tông'],
+  ['b7','Phòng điện, tủ điện'],['b8','Phòng nghỉ, bảng phân ca'],
+  ['b9','Cầu thang sắt, văn phòng tầng lửng'],['b10','Nhân vật nhân viên (dùng cho người chơi và Người Kiểm Kê), gắn xương bằng Mixamo'],
+  ['b11','Xe đẩy hàng'],
+];
+const WHO = { ai:'Claude', ban:'Bạn', chung:'Cả hai' };
+const KEY = 'hopdong30-plan';
+let state = {};
+try { state = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+const isDone = (id, def) => (id in state ? !!state[id] : !!def);
+
+function taskLi(id, text, who, def) {
+  const li = document.createElement('li');
+  li.innerHTML = `<label><input type="checkbox" id="${id}"><span>${text}${who ? `<span class="who ${who === 'ban' ? 'you' : ''}">${WHO[who]}</span>` : ''}</span></label>`;
+  const cb = li.querySelector('input');
+  cb.checked = isDone(id, def);
+  cb.addEventListener('change', () => { state[id] = cb.checked; save(); refresh(); });
+  return li;
+}
+
+const root = document.getElementById('phases');
+PHASES.forEach((p, i) => {
+  const d = document.createElement('details');
+  d.className = 'phase';
+  d.id = p.id;
+  d.open = i <= 1;
+  d.innerHTML = `<summary><div><h3>${p.name}</h3><div class="meta">${p.time} · <span class="cnt"></span></div></div><span class="status"></span><div class="pbar bar"><i></i></div></summary>
+    <div class="body"><div class="q"><b>Câu hỏi phải trả lời</b>${p.q}</div><ul class="tasks"></ul><textarea placeholder="Ghi chú, câu trả lời sau khi chơi thử…"></textarea></div>`;
+  const ul = d.querySelector('ul');
+  p.tasks.forEach(([id, text, who, def]) => ul.appendChild(taskLi(id, text, who, def)));
+  const ta = d.querySelector('textarea');
+  ta.value = state['note-' + p.id] || '';
+  ta.addEventListener('input', () => { state['note-' + p.id] = ta.value; save(); });
+  root.appendChild(d);
+});
+const bl = document.getElementById('blender-list');
+BLENDER.forEach(([id, text]) => bl.appendChild(taskLi(id, text, null, 0)));
+for (const id of ['log', 'later']) {
+  const ta = document.getElementById(id);
+  ta.value = state[id] || '';
+  ta.addEventListener('input', () => { state[id] = ta.value; save(); });
+}
+
+function refresh() {
+  let all = 0, done = 0;
+  PHASES.forEach((p) => {
+    const n = p.tasks.length;
+    const k = p.tasks.filter(([id, , , def]) => isDone(id, def)).length;
+    all += n; done += k;
+    const d = document.getElementById(p.id);
+    d.dataset.status = k === n ? 'done' : k > 0 ? 'doing' : 'todo';
+    d.querySelector('.status').textContent = k === n ? 'XONG' : k > 0 ? 'ĐANG LÀM' : 'CHƯA BẮT ĐẦU';
+    d.querySelector('.cnt').textContent = `${k}/${n} việc`;
+    d.querySelector('.pbar i').style.width = `${Math.round((k / n) * 100)}%`;
+  });
+  const bk = BLENDER.filter(([id]) => isDone(id, 0)).length;
+  document.getElementById('blender-status').textContent = `${bk}/${BLENDER.length}`;
+  document.getElementById('blender-bar').style.width = `${Math.round((bk / BLENDER.length) * 100)}%`;
+  const pct = Math.round((done / all) * 100);
+  document.getElementById('overall-pct').textContent = pct + '%';
+  document.getElementById('overall-bar').style.width = pct + '%';
+  document.getElementById('overall-text').textContent = `${done}/${all} việc trong 6 giai đoạn. Model Blender: ${bk}/${BLENDER.length}.`;
+}
+refresh();
+</script>
+</body>
+</html>

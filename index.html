@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hợp Đồng 30 Đêm · Bản thử</title>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <div id="hud" hidden>
+      <div id="clock"></div>
+      <div id="badge">
+        <div class="ph"></div>
+        <div>
+          <small>NHÂN VIÊN THỬ VIỆC</small>
+          <b id="badge-name"></b>
+          <div id="holes"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+      <div id="crosshair"></div>
+      <div id="hint"></div>
+      <div id="scanner" hidden>
+        <div class="t">MÁY QUÉT</div>
+        <div id="scan-name"></div>
+        <div class="bar"><i id="scan-bar"></i></div>
+        <div id="scan-state"></div>
+      </div>
+      <div id="toast"></div>
+      <div id="announce"></div>
+      <div id="vignette"></div>
+      <div id="count"></div>
+      <div id="sheet" class="receipt" hidden></div>
+      <pre id="debug" hidden></pre>
+    </div>
+
+    <div id="menu" class="overlay">
+      <div class="panel">
+        <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi · siêu thị khối xám</p>
+        <h1>Hợp Đồng <span>30 Đêm</span></h1>
+        <p class="lead">Thử việc 5 đêm, mỗi đêm khoảng 4,5 phút. Làm đủ chỉ tiêu <b>sau lưng Người Kiểm Kê</b>. Bị tia quét đỏ giữ 2 giây là bị đóng thùng.</p>
+        <div class="cols">
+          <ul>
+            <li><b>WASD</b> đi · <b>Shift</b> chạy (ồn)</li>
+            <li><b>E</b> lấy thùng / xếp hàng / ghi nhiệt độ</li>
+            <li><b>Giữ F</b> quét kệ (máy quét kêu bíp)</li>
+            <li><b>Q</b> ném lon nước để dụ nó</li>
+            <li><b>Tab</b> phiếu việc · <b>F3</b> thông tin gỡ lỗi</li>
+          </ul>
+          <ul>
+            <li>Quét kệ: 2 công · xếp kệ thiếu hàng: 1 công</li>
+            <li>Ghi nhiệt độ ở kho lạnh: 1 công, việc an toàn chỉ tính tối đa nửa chỉ tiêu</li>
+            <li>06:00 phải có mặt ở quầy</li>
+            <li>Thiếu công hoặc vắng điểm danh: thẻ bị bấm 1 lỗ. 3 lỗ là hết.</li>
+          </ul>
+        </div>
+        <label for="name">Tên nhân viên</label>
+        <div class="start-row">
+          <input id="name" maxlength="14" placeholder="Minh" autocomplete="off" />
+          <button id="start">Nhận ca</button>
+        </div>
+        <p class="note">Nên đeo tai nghe. Loa dùng giọng tiếng Việt của trình duyệt nếu máy có; nếu không, chỉ hiện chữ.</p>
+      </div>
+    </div>
+
+    <div id="pause" class="overlay" hidden>
+      <div class="panel small"><h2>Tạm dừng</h2><p>Bấm vào màn hình để tiếp tục ca làm việc.</p></div>
+    </div>
+
+    <div id="eval" class="overlay" hidden>
+      <div class="stack">
+        <div id="eval-body" class="receipt"></div>
+        <button id="eval-next"></button>
+      </div>
+    </div>
+
+    <div id="death" hidden data-stage="off">
+      <div class="red"><p>BÍP ————</p><p id="death-line"></p></div>
+      <div class="black"><div class="slit"></div><p>Hồ sơ đã được lưu kho.</p></div>
+    </div>
+
+    <div id="spectate" hidden>
+      <div id="spec-cam"></div>
+      <div class="help">CHẾ ĐỘ XEM · ← → đổi camera · R chơi lại</div>
+    </div>
+
+    <div id="final" class="overlay" hidden>
+      <div class="stack">
+        <div id="final-body" class="receipt"></div>
+        <div class="btns"><button id="final-yes">Đồng ý</button><button id="final-no">Từ chối</button></div>
+        <p id="final-out"></p>
+        <button onclick="location.reload()" class="ghost">Chơi lại</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
