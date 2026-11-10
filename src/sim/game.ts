@@ -30,6 +30,8 @@ export interface Evaluation {
 export type GameEvent =
   | { type: 'announce'; text: string }
   | { type: 'heard'; at: V2 }
+  | { type: 'light'; at: V2 }
+  | { type: 'power'; on: boolean }
   | { type: 'noise'; at: V2; radius: number }
   | { type: 'count'; n: number }
   | { type: 'lost' }
@@ -46,7 +48,10 @@ export class Game {
   holes = 0;
   shift: Shift;
   auditor: Auditor;
-  player: { pos: V2; alive: boolean } = { pos: { ...PLAYER_SPAWN }, alive: true };
+  player: { pos: V2; alive: boolean; light: boolean } = { pos: { ...PLAYER_SPAWN }, alive: true, light: false };
+  /** Điện siêu thị. Mất điện từ đêm 2: mỗi đêm một lần, khoảng 80 phút trong game (~45 giây thật). */
+  power = true;
+  blackout: { start: number; end: number } | null = null;
   phase: 'shift' | 'eval' | 'dead' | 'done' = 'shift';
   events: GameEvent[] = [];
   private rng: () => number;
@@ -57,9 +62,33 @@ export class Game {
     this.rng = mulberry32(seed);
     this.shift = new Shift(1, this.rng);
     this.auditor = new Auditor(tuningForNight(1), this.rng);
+    this.blackout = this.planBlackout();
+  }
+
+  private planBlackout(): { start: number; end: number } | null {
+    if (this.night < 2) return null;
+    const start = 120 + Math.floor(this.rng() * 180); // từ 00:00 đến 03:00
+    return { start, end: start + 80 };
+  }
+
+  /** Bật/tắt mất điện ngay (dùng để thử, phím F6 khi bật F3). */
+  forceBlackout(): void {
+    const m = this.shift.minutes;
+    this.announced.delete('bo_off');
+    this.announced.delete('bo_on');
+    this.blackout = this.power ? { start: m, end: m + 80 } : { start: m - 1, end: m };
+    if (!this.power) this.announced.add('bo_off');
+  }
+
+  private setPower(on: boolean): void {
+    if (this.power === on) return;
+    this.power = on;
+    this.auditor.blackout = !on;
+    this.events.push({ type: 'power', on });
   }
 
   tick(dt: number): void {
+    this.auditor.blackout = !this.power;
     if (this.phase === 'dead') {
       // Người chết chỉ xem: Người Kiểm Kê vẫn đi tuần.
       this.auditor.update(dt, this.player.pos, false);
@@ -69,7 +98,7 @@ export class Game {
     if (this.phase !== 'shift') return;
     this.shift.minutes += dt / REAL_PER_MIN;
     this.schedule();
-    this.auditor.update(dt, this.player.pos, this.player.alive);
+    this.auditor.update(dt, this.player.pos, this.player.alive, this.player.light);
     this.drainAuditor();
     if (this.phase === 'shift' && this.shift.minutes >= SHIFT_MINUTES) this.endShift();
   }
@@ -92,6 +121,8 @@ export class Game {
     const sec = sectionById(id);
     if (!sec) return { ok: false, msg: 'Không xác định được kệ.' };
     if (this.shift.scanned.has(id)) return { ok: false, msg: `${sec.name}: đã quét trong ca này.` };
+    if (this.shift.restockNeeded.has(id))
+      return { ok: false, msg: `${sec.name} đang thiếu hàng. Xếp hàng vào trước rồi mới quét.` };
     this.shift.scanned.add(id);
     return this.credit('scan', `Quét xong ${sec.name}`);
   }
@@ -111,6 +142,12 @@ export class Game {
     if (this.shift.freezerDone.has(w)) return { ok: false, msg: 'Mốc giờ này đã ghi rồi.' };
     this.shift.freezerDone.add(w);
     return this.credit('freezer', 'Ghi nhiệt độ tủ đông: -18°C');
+  }
+
+  /** Thả rơi thùng đang ôm (để chạy cho nhanh). Hàng bị trả về đống trong kho. */
+  dropBox(): void {
+    this.shift.pile++;
+    this.shift.stats.drops++;
   }
 
   takeBox(): boolean {
@@ -161,6 +198,17 @@ export class Game {
         `Nhân viên ${this.name}: ${numberVi(this.shift.cong)} trên ${numberVi(this.shift.quota)} công.`,
       ),
     );
+    const b = this.blackout;
+    if (b) {
+      this.once('bo_off', m >= b.start, () => {
+        this.setPower(false);
+        this.announce('Sự cố mất điện. Nhân viên tiếp tục làm việc bằng đèn pin. Thời gian mất điện vẫn tính là giờ làm.');
+      });
+      this.once('bo_on', m >= b.end, () => {
+        this.setPower(true);
+        this.announce('Điện đã có lại. Cảm ơn nhân viên đã không nghỉ.');
+      });
+    }
     this.once('rollcall', m >= 450, () => this.announce('Còn ba mươi phút đến điểm danh tại quầy.'));
   }
 
@@ -169,6 +217,10 @@ export class Game {
       switch (e.type) {
         case 'heard':
           this.events.push({ type: 'heard', at: e.at });
+          break;
+        case 'light':
+          this.shift.stats.lightSpotted++;
+          this.events.push({ type: 'light', at: e.at });
           break;
         case 'count':
           if (e.n === 1) this.shift.stats.seen++;
@@ -247,6 +299,8 @@ export class Game {
     if (st.cans >= 3) n.push(`Ném ${st.cans} lon nước. Hàng hóa không phải đồ chơi.`);
     if (idleMin >= 90) n.push(`Đứng yên ${idleMin} phút trong ca. Hiệu suất: thấp.`);
     if (st.runSec >= 15) n.push(`Chạy trong siêu thị ${Math.round(st.runSec)} giây. Lý do khai báo: "bị dí".`);
+    if (st.lightSpotted >= 2) n.push(`Rọi đèn pin vào kiểm kê viên ${st.lightSpotted} lần. Đề nghị tiết kiệm pin.`);
+    if (st.drops >= 1) n.push(`Làm rơi ${st.drops} thùng hàng khi đang chạy. Hàng dễ vỡ, nhân viên thì không.`);
     if (st.seen >= 2) n.push(`Bị kiểm kê viên quét trúng ${st.seen} lần nhưng vẫn còn ở đây. Đáng ngờ.`);
     if (this.shift.cong >= this.shift.quota * 1.5) n.push('Nhân viên có dấu hiệu chăm chỉ bất thường.');
     if (!n.length) n.push('Không có gì để nhận xét.');
@@ -261,5 +315,7 @@ export class Game {
     this.player.alive = true;
     this.phase = 'shift';
     this.announced.clear();
+    this.power = true;
+    this.blackout = this.planBlackout();
   }
 }

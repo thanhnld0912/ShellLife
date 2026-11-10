@@ -1,14 +1,16 @@
 // Người Kiểm Kê: tuần tra, nhìn bằng tia quét, nghe tiếng động và lần theo điểm nghi ngờ.
-// Không bao giờ chạy. Bị tia quét giữ đủ countTime giây thì người chơi bị "đóng thùng".
+// Bình thường chỉ đi bộ. Khi MẤT ĐIỆN: nghe tiếng động hoặc thấy ánh đèn pin rọi tới thì CHẠY tới.
+// Bị tia quét giữ đủ countTime giây thì người chơi bị "đóng thùng".
 
 import type { AABB, V2 } from './geometry.ts';
-import { clamp, dist, headingTo, inBox, inflate, segIntersectsAABB, turnToward, wrapAngle } from './geometry.ts';
+import { clamp, dist, headingTo, inBox, inflate, rayAABB, segIntersectsAABB, turnToward, wrapAngle } from './geometry.ts';
 import { AUDITOR_DOOR, AUDITOR_SPAWN, COUNTER, MOVE_BLOCKERS, NAV_X, NAV_Z, OCCLUDERS, SHELVES } from './layout.ts';
 
 export type AuditorState = 'idle' | 'enter' | 'patrol' | 'alert' | 'investigate' | 'search' | 'count' | 'caught';
 
 export type AuditorEvent =
   | { type: 'heard'; at: V2 }
+  | { type: 'light'; at: V2 }
   | { type: 'count'; n: number }
   | { type: 'caught' }
   | { type: 'lost' }
@@ -18,6 +20,8 @@ export type AuditorEvent =
 export interface AuditorTuning {
   speed: number;
   investigateSpeed: number;
+  /** Tốc độ chạy khi mất điện (người chơi chạy 3,8; ôm thùng chạy 2,7). Đêm 1: 3,4. */
+  runSpeed: number;
   range: number;
   halfAngle: number;
   hearMul: number;
@@ -28,6 +32,7 @@ export function tuningForNight(n: number): AuditorTuning {
   return {
     speed: 1.0 + 0.08 * (n - 1),
     investigateSpeed: 1.6 + 0.08 * (n - 1),
+    runSpeed: 3.4 + 0.08 * (n - 1), // đêm 5: 3,72 m/s, vẫn chậm hơn người chơi chạy (3,8) một chút
     range: 9 + 0.4 * (n - 1),
     halfAngle: 0.2,
     hearMul: 1 + 0.1 * (n - 1),
@@ -41,6 +46,15 @@ export function hasLOS(a: V2, b: V2): boolean {
 }
 
 const MOVE_INFLATED: AABB[] = MOVE_BLOCKERS.map((b) => inflate(b, 0.32));
+/** Tia quét đi được bao xa theo góc này trước khi bị kệ / tường chặn. */
+export function beamReach(from: V2, angle: number, range: number): number {
+  const dx = Math.sin(angle);
+  const dz = Math.cos(angle);
+  let best = range;
+  for (const b of OCCLUDERS) best = Math.min(best, rayAABB(from, dx, dz, b));
+  return Math.max(0.15, best);
+}
+
 export function pathClear(a: V2, b: V2): boolean {
   for (const o of MOVE_INFLATED) if (segIntersectsAABB(a, b, o)) return false;
   return true;
@@ -143,7 +157,13 @@ export class Auditor {
   suspicion: V2 | null = null;
   lastSeen: V2 | null = null;
   moving = false;
+  /** Đang mất điện (do Game đặt). */
+  blackout = false;
+  /** Đang chạy (chỉ xảy ra khi mất điện). */
+  running = false;
   events: AuditorEvent[] = [];
+  private urgent = false;
+  private lightCd = 0;
 
   private rng: () => number;
   private path: V2[] = [];
@@ -196,14 +216,24 @@ export class Auditor {
     this.state = 'alert';
     this.stateT = 0;
     this.path = [];
+    this.urgent = this.blackout;
     this.events.push({ type: 'heard', at: { ...s } });
     return s;
   }
 
-  update(dt: number, player: V2, alive: boolean): void {
+  /** Khi mất điện, ánh đèn pin trong tầm mắt (rộng hơn tia quét) làm nó chú ý. */
+  seesLight(p: V2): boolean {
+    if (dist(this.pos, p) > 16) return false;
+    if (Math.abs(wrapAngle(headingTo(this.pos, p) - this.heading)) > 1.15) return false;
+    return hasLOS(this.pos, p);
+  }
+
+  update(dt: number, player: V2, alive: boolean, lightOn = false): void {
     this.t += dt;
     this.stateT += dt;
     this.moving = false;
+    this.running = false;
+    this.lightCd = Math.max(0, this.lightCd - dt);
     if (this.state === 'idle' || this.state === 'caught') return;
 
     // --- Phát hiện bằng tia quét ---
@@ -242,6 +272,23 @@ export class Auditor {
       return;
     }
 
+    // --- Mất điện: thấy ánh đèn pin thì chạy tới chỗ đó ---
+    if (this.blackout && alive && lightOn && this.lightCd <= 0 && this.state !== 'alert' && this.seesLight(player)) {
+      this.lightCd = 2;
+      const ang = this.rng() * Math.PI * 2;
+      const s = walkablePoint({ x: player.x + Math.sin(ang), z: player.z + Math.cos(ang) });
+      this.suspicion = s;
+      this.urgent = true;
+      if (this.state === 'investigate') {
+        this.path = planPath(this.pos, s);
+      } else {
+        this.state = 'alert';
+        this.stateT = 0;
+        this.path = [];
+        this.events.push({ type: 'light', at: { ...s } });
+      }
+    }
+
     switch (this.state) {
       case 'enter':
         if (this.follow(dt, this.tune.speed)) this.startPatrol();
@@ -263,10 +310,11 @@ export class Auditor {
           this.heading = turnToward(this.heading, h, 3 * dt);
           this.beam = turnToward(this.beam, h, 4 * dt);
         }
-        if (this.stateT > 0.8) this.goInvestigate(this.suspicion ?? this.pos);
+        if (this.stateT > (this.urgent ? 0.35 : 0.8)) this.goInvestigate(this.suspicion ?? this.pos);
         break;
       case 'investigate':
-        if (this.follow(dt, this.tune.investigateSpeed)) {
+        if (this.follow(dt, this.urgent ? this.tune.runSpeed : this.tune.investigateSpeed)) {
+          this.urgent = false;
           this.state = 'search';
           this.stateT = 0;
         }
@@ -279,9 +327,10 @@ export class Auditor {
         break;
     }
 
+    this.running = this.moving && this.urgent && this.state === 'investigate';
     if (this.moving) {
       this.stepT += dt;
-      if (this.stepT > 0.62) {
+      if (this.stepT > (this.running ? 0.34 : 0.62)) {
         this.stepT = 0;
         this.events.push({ type: 'step' });
       }
@@ -303,7 +352,7 @@ export class Auditor {
     const tgt = this.path[0];
     const d = dist(this.pos, tgt);
     const h = headingTo(this.pos, tgt);
-    this.heading = turnToward(this.heading, h, 3.5 * dt);
+    this.heading = turnToward(this.heading, h, (this.running || this.urgent ? 7 : 3.5) * dt);
     const align = Math.cos(wrapAngle(h - this.heading));
     const step = speed * dt * Math.max(0.15, align);
     if (d <= step) {
@@ -329,6 +378,7 @@ export class Auditor {
     });
     this.routeIdx = best;
     this.path = planPath(this.pos, ROUTE[best]);
+    this.urgent = false;
     this.state = 'patrol';
     this.stateT = 0;
   }

@@ -16,12 +16,21 @@
     button.item:hover { background: #222a27; }
     button.item.on { border-color: var(--accent); background: #2a1f1e; }
     button.item small { color: var(--muted); float: right; }
+    button.item.compare { border-color: var(--line); margin-bottom: 8px; font-weight: 600; }
+    #clips button small { color: var(--muted); font-size: 11px; }
     #info { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
     #info b { display: block; font-size: 15px; margin-bottom: 4px; }
     #info .meta { color: var(--muted); margin-top: 6px; }
     .row { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0 4px; }
     .row button { background: #222a27; border: 1px solid var(--line); color: var(--text); padding: 5px 9px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px; }
     .row button.on { border-color: var(--accent); }
+    #clips:empty { display: none; }
+    #clips { margin: 10px 0 14px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+    #clips .t { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    #clips button { display: block; width: 100%; text-align: left; margin: 3px 0; background: #222a27; border: 1px solid var(--line); color: var(--text); padding: 6px 9px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px; }
+    #clips button.on { border-color: var(--accent); background: #2a1f1e; }
+    #clips label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+    #clips input[type=range] { flex: 1; }
     main { position: relative; min-width: 0; }
     canvas { display: block; width: 100%; height: 100%; }
     #hint { position: absolute; left: 12px; bottom: 10px; color: var(--muted); font-size: 12px; pointer-events: none; }
@@ -36,8 +45,10 @@
       <div class="row">
         <button id="lightStudio" class="on">Ánh sáng xem</button>
         <button id="lightGame">Ánh sáng ca đêm</button>
+        <button id="ps1">Bộ lọc PS1</button>
         <button id="scaleRef">Người 1,72 m</button>
       </div>
+      <div id="clips"></div>
       <div id="list"></div>
       <div id="info"></div>
     </aside>

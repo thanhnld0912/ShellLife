@@ -29,6 +29,25 @@ export const inflate = (b: AABB, r: number): AABB => ({
 });
 
 /** Đoạn thẳng a→b có cắt hình hộp không (phương pháp slab). */
+/** Khoảng cách từ a theo hướng đơn vị (dx, dz) tới khi chạm hộp; không chạm thì Infinity. */
+export function rayAABB(a: V2, dx: number, dz: number, box: AABB): number {
+  let tmin = 0;
+  let tmax = Infinity;
+  for (const [o, d, lo, hi] of [[a.x, dx, box.minX, box.maxX], [a.z, dz, box.minZ, box.maxZ]]) {
+    if (Math.abs(d) < 1e-9) {
+      if (o < lo || o > hi) return Infinity;
+    } else {
+      let t1 = (lo - o) / d;
+      let t2 = (hi - o) / d;
+      if (t1 > t2) [t1, t2] = [t2, t1];
+      tmin = Math.max(tmin, t1);
+      tmax = Math.min(tmax, t2);
+      if (tmin > tmax) return Infinity;
+    }
+  }
+  return tmin;
+}
+
 export function segIntersectsAABB(a: V2, b: V2, box: AABB): boolean {
   let tmin = 0;
   let tmax = 1;

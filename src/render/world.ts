@@ -19,6 +19,8 @@ export interface World {
   setPileCount(n: number): void;
   addCan(x: number, z: number): void;
   addStoredBox(name: string): void;
+  /** Mức điện 0..1 (1 = đủ sáng, 0 = mất điện, giữa = chập chờn). */
+  setPower(level: number): void;
 }
 
 const PALETTE = [0xd94b3d, 0xe8a33c, 0xf2d04b, 0x5fae5b, 0x3f88c5, 0x8e5bb5, 0xe9e4d4, 0x2f9c95, 0xc4426a, 0xf08a24];
@@ -67,17 +69,33 @@ export function buildWorld(playerName: string): World {
   };
 
   // ---- Ánh sáng ----
-  add(new THREE.HemisphereLight(0xdcebe5, 0x111615, 0.75));
-  add(new THREE.AmbientLight(0xffffff, 0.12));
+  // Mỗi đèn nhớ (độ sáng khi có điện, độ sáng khi mất điện)
+  const powered: [THREE.Light, number, number][] = [];
+  const hemi = add(new THREE.HemisphereLight(0xdcebe5, 0x111615, 0.75));
+  powered.push([hemi, 0.75, 0.03]);
+  powered.push([add(new THREE.AmbientLight(0xffffff, 0.12)), 0.12, 0.015]);
   for (const [x, z] of [[6, 9.5], [16, 9.5], [6, 17.5], [16, 17.5], [21.5, 21.5]]) {
     const l = new THREE.PointLight(0xe4fff4, 7, 13, 1.2);
     l.position.set(x, 2.95, z);
     add(l);
+    powered.push([l, 7, 0]);
   }
   for (const r of ROOMS) {
     const l = new THREE.PointLight(r.name === 'KHO LẠNH' ? 0x9fdcff : 0xffe7c4, 2.2, 7, 1.4);
     l.position.set((r.box.minX + r.box.maxX) / 2, 2.8, (r.box.minZ + r.box.maxZ) / 2);
     add(l);
+    powered.push([l, 2.2, 0]);
+  }
+  // Đèn lối thoát chạy pin: luôn sáng xanh, chỉ thấy rõ khi mất điện
+  for (const [x, y, z, ry] of [[12, 2.75, 23.82, Math.PI], [7, 2.6, 6.12, 0], [23.82, 2.6, 15, -Math.PI / 2]]) {
+    const sign = labelPlane(['LỐI THOÁT'], 0.9, 0.26, { bg: '#0d5c2a', fg: '#c9ffd8' });
+    sign.position.set(x, y, z);
+    sign.rotation.y = ry;
+    add(sign);
+    const g = new THREE.PointLight(0x3dff7a, 0.9, 5, 1.5);
+    g.position.set(x, y - 0.3, z + (ry === 0 ? 0.3 : ry === Math.PI ? -0.3 : 0) + 0);
+    if (ry === -Math.PI / 2) g.position.x -= 0.3;
+    add(g);
   }
 
   // ---- Sàn, trần, tường ----
@@ -87,6 +105,7 @@ export function buildWorld(playerName: string): World {
   );
   floor.rotation.x = -Math.PI / 2;
   floor.position.set(STORE.w / 2, 0, STORE.d / 2);
+  floor.receiveShadow = true;
   const back = add(new THREE.Mesh(new THREE.PlaneGeometry(STORE.w, STORE.backZ), lambert(0x5a605c)));
   back.rotation.x = -Math.PI / 2;
   back.position.set(STORE.w / 2, 0.003, STORE.backZ / 2);
@@ -95,7 +114,10 @@ export function buildWorld(playerName: string): World {
   ceil.position.set(STORE.w / 2, STORE.wallH, STORE.d / 2);
 
   const wallMat = lambert(0x48514e);
-  for (const w of WALLS) add(boxFrom(w, 0, STORE.wallH, wallMat), true);
+  for (const w of WALLS) {
+    const m = add(boxFrom(w, 0, STORE.wallH, wallMat), true);
+    m.castShadow = m.receiveShadow = true;
+  }
   const glass = add(
     boxFrom(GLASS, 0, STORE.wallH, new THREE.MeshLambertMaterial({ color: 0x9fd8e6, transparent: true, opacity: 0.14, depthWrite: false })),
     true,
@@ -104,6 +126,8 @@ export function buildWorld(playerName: string): World {
 
   // Đèn huỳnh quang dạng dải trên mỗi làn
   const tubeMat = new THREE.MeshBasicMaterial({ color: 0xe8fff6, toneMapped: false });
+  const tubeOn = new THREE.Color(0xe8fff6);
+  const tubeOff = new THREE.Color(0x1a1f1e);
   for (const z of NAV_Z) {
     const t = add(new THREE.Mesh(new THREE.BoxGeometry(17, 0.05, 0.14), tubeMat));
     t.position.set(10.75, STORE.wallH - 0.06, z);
@@ -121,7 +145,7 @@ export function buildWorld(playerName: string): World {
     const backPanel = new THREE.Mesh(new THREE.BoxGeometry(SHELF_X1 - SHELF_X0, SHELF_HEIGHT, 0.1), shelfMat);
     backPanel.position.set(SHELF_MID, SHELF_HEIGHT / 2, row.zc);
     g.add(backPanel);
-    for (const y of BOARD_YS) {
+    for (const y of [...BOARD_YS, SHELF_HEIGHT - 0.02]) {
       const b = new THREE.Mesh(new THREE.BoxGeometry(SHELF_X1 - SHELF_X0, 0.04, 0.96), boardMat);
       b.position.set(SHELF_MID, y, row.zc);
       g.add(b);
@@ -131,6 +155,10 @@ export function buildWorld(playerName: string): World {
       p.position.set(x, SHELF_HEIGHT / 2, row.zc);
       g.add(p);
     }
+    g.traverse((o) => {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    });
     add(g);
     // Hộp vô hình để raycast tương tác
     const hit = boxFrom(row.box, 0, SHELF_HEIGHT, new THREE.MeshBasicMaterial({ visible: false }));
@@ -139,7 +167,7 @@ export function buildWorld(playerName: string): World {
     shelfHits.push(hit);
     // Biển tên dãy
     const sign = labelPlane([`DÃY ${row.id}`], 1.4, 0.42, { bg: '#1e2422', fg: '#f2c94c' });
-    sign.position.set(SHELF_MID, 2.7, row.zc);
+    sign.position.set(SHELF_MID, 2.82, row.zc);
     add(sign);
   }
 
@@ -153,7 +181,7 @@ export function buildWorld(playerName: string): World {
     const row = SHELVES[sec.row - 1];
     const zItem = row.zc + sec.out * 0.25;
     for (let x = sec.x0 + 0.2; x < sec.x1 - 0.15; x += 0.3) {
-      for (let li = 0; li < 4; li++) {
+      for (let li = 0; li < BOARD_YS.length; li++) {
         const w = 0.2 + rand() * 0.06;
         const h = 0.22 + rand() * 0.16;
         const d = 0.2 + rand() * 0.04;
@@ -173,6 +201,8 @@ export function buildWorld(playerName: string): World {
     col.setHex(PALETTE[Math.floor(rand() * PALETTE.length)]).multiplyScalar(0.8 + rand() * 0.25);
     items.setColorAt(i, col);
   });
+  items.castShadow = true;
+  items.receiveShadow = true;
   add(items);
   const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
   const setSectionFilled = (id: string, filled: boolean) => {
@@ -336,6 +366,10 @@ export function buildWorld(playerName: string): World {
       c.position.set(x, 0.034, z);
       add(c);
       cans.push(c);
+    },
+    setPower(level) {
+      for (const [l, on, off] of powered) l.intensity = off + (on - off) * level;
+      tubeMat.color.copy(tubeOff).lerp(tubeOn, level);
     },
     addStoredBox(name) {
       const n = stored.length;

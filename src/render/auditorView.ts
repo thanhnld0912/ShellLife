@@ -1,7 +1,10 @@
 // Hình dạng Người Kiểm Kê và tia quét đỏ. Tạm dùng khối đơn giản; sau thay bằng model Blender.
 
 import * as THREE from 'three';
-import type { Auditor } from '../sim/auditor.ts';
+import { beamReach, type Auditor } from '../sim/auditor.ts';
+
+const RAYS = 22; // số tia của nón quét; mỗi tia bị cắt tại chỗ chạm kệ / tường
+const SLOPE = -0.08; // nón hơi chúc xuống
 
 const SCANNER_Y = 1.25;
 
@@ -15,8 +18,7 @@ export class AuditorView {
   private spot: THREE.SpotLight;
   private head: THREE.Group;
   private marker: THREE.Mesh;
-  private range = 0;
-  private half = 0;
+  private fanPos = new Float32Array((1 + 2 * (RAYS + 1)) * 3);
   private walkT = 0;
 
   constructor(scene: THREE.Scene) {
@@ -54,10 +56,24 @@ export class AuditorView {
       side: THREE.DoubleSide,
       toneMapped: false,
     });
-    this.cone = new THREE.Mesh(new THREE.BufferGeometry(), this.coneMat);
+    const fan = new THREE.BufferGeometry();
+    fan.setAttribute('position', new THREE.BufferAttribute(this.fanPos, 3).setUsage(THREE.DynamicDrawUsage));
+    const idx: number[] = [];
+    for (let i = 0; i < RAYS; i++) {
+      const t0 = 1 + i * 2;
+      const t1 = 1 + (i + 1) * 2;
+      idx.push(0, t0, t1, 0, t1 + 1, t0 + 1); // mặt trên và mặt dưới của nón dẹt
+    }
+    fan.setIndex(idx);
+    this.cone = new THREE.Mesh(fan, this.coneMat);
+    this.cone.frustumCulled = false;
     const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, 1)]);
     this.laser = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xff3b30, toneMapped: false }));
     this.spot = new THREE.SpotLight(0xff3b30, 22, 10, 0.3, 0.6, 1.2);
+    this.spot.castShadow = true; // không chiếu xuyên kệ
+    this.spot.shadow.mapSize.set(512, 512);
+    this.spot.shadow.camera.near = 0.3;
+    this.spot.shadow.bias = -0.002;
     const tgt = new THREE.Object3D();
     tgt.position.set(0, -0.4, 5);
     this.beamPivot.add(this.cone, this.laser, this.spot, tgt);
@@ -74,29 +90,44 @@ export class AuditorView {
     scene.add(this.group, this.marker);
   }
 
-  private setShape(range: number, half: number): void {
-    if (range === this.range && half === this.half) return;
-    this.range = range;
-    this.half = half;
-    const g = new THREE.ConeGeometry(Math.tan(half) * range, range, 24, 1, true);
-    g.translate(0, -range / 2, 0);
-    g.rotateX(-Math.PI / 2); // đỉnh ở gốc, đáy hướng về +Z
-    this.cone.geometry.dispose();
-    this.cone.geometry = g;
-    this.laser.scale.set(1, 1, range);
+  /** Dựng lại nón quét: mỗi tia dài tới chỗ bị kệ / tường chặn. */
+  private shapeBeam(a: Auditor): void {
+    const range = a.tune.range;
+    const half = a.tune.halfAngle;
+    const h = a.heading;
+    // gốc tia = vị trí máy quét (lệch phải 0,12 m, ra trước 0,5 m)
+    const o = { x: a.pos.x + 0.12 * Math.cos(h) + 0.5 * Math.sin(h), z: a.pos.z - 0.12 * Math.sin(h) + 0.5 * Math.cos(h) };
+    const p = this.fanPos;
+    p[0] = p[1] = p[2] = 0;
+    let center = range;
+    for (let i = 0; i <= RAYS; i++) {
+      const u = (i / RAYS) * 2 - 1;
+      const phi = u * half;
+      const d = beamReach(o, a.beam + phi, range);
+      if (i === RAYS / 2) center = d;
+      const r = Math.tan(half) * d * Math.sqrt(Math.max(0, 1 - u * u));
+      const x = Math.sin(phi) * d;
+      const z = Math.cos(phi) * d;
+      const y = SLOPE * d;
+      p.set([x, y + r, z, x, y - r, z], 3 + i * 6);
+    }
+    const attr = this.cone.geometry.getAttribute('position') as THREE.BufferAttribute;
+    attr.needsUpdate = true;
+    this.laser.scale.set(1, 1, center);
     this.spot.distance = range + 1;
     this.spot.angle = half * 1.35;
+    this.spot.shadow.camera.far = range + 1;
   }
 
   update(a: Auditor, dt: number, debug: boolean): void {
-    this.setShape(a.tune.range, a.tune.halfAngle);
+    if (a.state !== 'idle') this.shapeBeam(a);
     const hidden = a.state === 'idle';
     this.group.visible = !hidden;
     this.group.position.set(a.pos.x, 0, a.pos.z);
     this.group.rotation.y = a.heading;
     this.beamPivot.rotation.y = a.beam - a.heading;
-    if (a.moving) this.walkT += dt * 7;
-    this.body.position.y = a.moving ? Math.abs(Math.sin(this.walkT)) * 0.03 : 0;
+    if (a.moving) this.walkT += dt * (a.running ? 13 : 7);
+    this.body.position.y = a.moving ? Math.abs(Math.sin(this.walkT)) * (a.running ? 0.07 : 0.03) : 0;
     this.body.rotation.z = a.moving ? Math.sin(this.walkT) * 0.025 : 0;
     // Ngẩng đầu khi nghe thấy hoặc đang đếm
     const lookUp = a.state === 'alert' || a.state === 'count' || a.state === 'search';

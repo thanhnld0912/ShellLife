@@ -20,6 +20,8 @@ button.ghost { background: transparent; color: var(--dim); border: 1px solid var
 .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(8, 11, 12, .82); padding: 16px; z-index: 20; overflow: auto; }
 .panel { max-width: 46rem; background: var(--floor); border: 1px solid var(--line); border-radius: 6px; padding: 1.6rem 1.8rem; }
 .panel.small { max-width: 24rem; text-align: center; cursor: pointer; }
+.sens { display: flex; align-items: center; gap: .6rem; margin-top: 1rem; cursor: default; font-size: .9rem; }
+.sens input { flex: 1; }
 .panel h1 { margin: .2rem 0 .6rem; font-size: clamp(2rem, 6vw, 3.2rem); color: var(--fluoro); line-height: 1.05; }
 .panel h1 span { color: var(--tag); }
 .panel h2 { margin: 0 0 .4rem; color: var(--fluoro); }

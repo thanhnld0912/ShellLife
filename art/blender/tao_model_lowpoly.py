@@ -100,8 +100,15 @@ C = dict(
 )
 
 # ---------------------------------------------------------------- hình khối
+BONE = [None]  # xương đang gắn cho các khối tạo tiếp theo (chỉ dùng cho nhân vật)
+
+def bo(name):
+    BONE[0] = name
+
 def _post(o, m):
     o.data.materials.append(m)
+    if BONE[0]:
+        o['bone'] = BONE[0]
     return o
 
 def box(P, size, loc, m, rot=(0, 0, 0), bev=0.0):
@@ -159,6 +166,11 @@ def finish(P, name, ten, mo_ta):
         o.select_set(True)
     bpy.context.view_layer.objects.active = P[0]
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    for p in P:  # mỗi khối gắn cứng 100% vào một xương
+        if 'bone' in p:
+            vg = p.vertex_groups.new(name=p['bone'])
+            vg.add(list(range(len(p.data.vertices))), 1.0, 'REPLACE')
+    BONE[0] = None
     bpy.ops.object.join()
     o = bpy.context.active_object
     o.name = o.data.name = name
@@ -178,49 +190,64 @@ def finish(P, name, ten, mo_ta):
 # 1. Kệ hàng (một module gondola 2 mặt; dãy kệ 13 m = 10 module)
 def ke_hang():
     P = []
-    W, D, H = 1.3, 1.0, 2.0
+    W, D, H = 1.3, 1.0, 2.4
     box(P, (W, D * 0.9, 0.12), (0, 0, 0.06), C['thep_toi'])            # chân đế
     box(P, (W, 0.05, H - 0.12), (0, 0, 0.12 + (H - 0.12) / 2), C['thep'])  # vách giữa (pegboard)
     for x in (-W / 2 + 0.025, W / 2 - 0.025):
         box(P, (0.05, 0.12, H), (x, 0, H / 2), C['thep_toi'])          # trụ đứng
     for side in (-1, 1):
-        for z in (0.16, 0.6, 1.04, 1.48):
+        for z in (0.16, 0.6, 1.04, 1.48, 1.92):
             box(P, (W - 0.08, 0.42, 0.03), (0, side * 0.25, z), C['thep'])
             box(P, (W - 0.08, 0.015, 0.06), (0, side * 0.465, z + 0.01), C['tem_gia'])  # dải tem giá
-        for z in (0.16, 0.6, 1.04, 1.48):
+        for z in (0.16, 0.6, 1.04, 1.48, 1.92):
             for x in (-0.4, 0.1, 0.45):
                 box(P, (0.05, 0.004, 0.03), (x, side * 0.474, z + 0.01), C['giay'])   # tem giá nhỏ
     box(P, (W, 0.06, 0.22), (0, 0, H + 0.11), C['thuong_hieu'])          # bảng đầu kệ
-    return finish(P, 'ke_hang', 'Kệ hàng (module 1,3 m)',
-                  'Gondola 2 mặt, 4 tầng mỗi mặt, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).')
+    return finish(P, 'ke_hang', 'Kệ hàng (module 1,3 m, cao 2,4 m)',
+                  'Gondola 2 mặt, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).')
 
 # 2. Người Kiểm Kê
 def nguoi_kiem_ke():
     P = []
     U, Q, S, K = C['dong_phuc'], C['quan_kk'], C['da_kk'], C['nhua_den']
-    for sx in (-1, 1):
+    # Quy ước bên: .L = phía +X (tay cầm máy quét), .R = phía -X (tay buông thõng)
+    for sx, sd in ((1, 'L'), (-1, 'R')):
+        bo('cang.' + sd)
         box(P, (0.11, 0.27, 0.07), (sx * 0.1, -0.04, 0.035), K, bev=0.01)          # giày
-        limb(P, (sx * 0.1, 0, 0.07), (sx * 0.11, 0, 0.98), 0.055, Q, r2=0.075)  # chân dài
+        limb(P, (sx * 0.1, 0, 0.07), (sx * 0.105, 0, 0.53), 0.055, Q, r2=0.064)     # cẳng chân
+        ball(P, 0.064, (sx * 0.105, 0, 0.53), Q, sub=1)                             # đầu gối
+        bo('dui.' + sd)
+        limb(P, (sx * 0.105, 0, 0.53), (sx * 0.11, 0, 0.98), 0.064, Q, r2=0.075)    # đùi dài
+    bo('hong')
     box(P, (0.34, 0.2, 0.16), (0, 0, 1.0), Q)                                     # hông
+    bo('than')
     t = cyl(P, 0.17, 0.66, (0, 0, 1.4), U, n=8, r2=0.23)                          # thân
     t.scale = (1, 0.62, 1)
     box(P, (0.2, 0.03, 0.08), (0, -0.115, 1.7), C['giay'])                        # cổ áo
+    box(P, (0.1, 0.012, 0.065), (-0.1, -0.138, 1.52), C['giay'])                  # thẻ tên trắng (trống)
+    bo('co')
     limb(P, (0, 0.02, 1.7), (0, -0.03, 1.86), 0.045, S)                           # cổ hơi dài
+    bo('dau')
     ball(P, 0.13, (0, -0.07, 1.93), S, scale=(0.95, 1.0, 1.18))                   # đầu không mặt, cúi về trước
-    cyl(P, 0.145, 0.08, (0, -0.07, 2.07), K, n=10)                                 # mũ
-    box(P, (0.25, 0.14, 0.015), (0, -0.2, 2.035), K, rot=(0.25, 0, 0))              # lưỡi trai
-    # tay trái: buông thõng, dài quá hông (khó chịu khi nhìn lâu)
+    cyl(P, 0.145, 0.08, (0, -0.07, 2.07), K, n=10)                                # mũ
+    box(P, (0.25, 0.14, 0.015), (0, -0.2, 2.035), K, rot=(0.25, 0, 0))            # lưỡi trai
+    # tay buông thõng, dài quá hông (khó chịu khi nhìn lâu)
+    bo('tay_tren.R')
     limb(P, (-0.25, 0, 1.66), (-0.29, 0.01, 1.25), 0.045, U, r2=0.04)
+    bo('tay_duoi.R')
+    ball(P, 0.042, (-0.29, 0.01, 1.25), U)
     limb(P, (-0.29, 0.01, 1.25), (-0.27, -0.02, 0.8), 0.04, U, r2=0.032)
     box(P, (0.05, 0.08, 0.14), (-0.27, -0.02, 0.71), S)                          # bàn tay
-    # tay phải: cầm máy quét ngang ngực, chĩa về trước
+    # tay cầm máy quét ngang ngực, chĩa về trước
+    bo('tay_tren.L')
     limb(P, (0.25, 0, 1.66), (0.28, -0.04, 1.3), 0.045, U, r2=0.04)
+    bo('tay_duoi.L')
+    ball(P, 0.042, (0.28, -0.04, 1.3), U)
     limb(P, (0.28, -0.04, 1.3), (0.15, -0.38, 1.25), 0.04, U, r2=0.032)
     box(P, (0.06, 0.09, 0.08), (0.14, -0.42, 1.23), S)
     box(P, (0.05, 0.06, 0.16), (0.12, -0.44, 1.18), K, rot=(0.3, 0, 0))           # tay cầm máy quét
     box(P, (0.11, 0.12, 0.09), (0.12, -0.5, 1.27), K, bev=0.008)                  # đầu máy quét
     box(P, (0.08, 0.01, 0.05), (0.12, -0.565, 1.27), C['den_do'])                 # mắt quét đỏ
-    box(P, (0.1, 0.012, 0.065), (-0.1, -0.138, 1.52), C['giay'])                   # thẻ tên trắng (trống)
     return finish(P, 'nguoi_kiem_ke', 'Người Kiểm Kê',
                   'Cao 2,05 m, gầy, đầu không mặt luôn cúi, tay trái dài quá hông, tay phải cầm máy quét ở độ cao 1,25 m (khớp SCANNER_Y). Thẻ tên để trống.')
 
@@ -228,22 +255,41 @@ def nguoi_kiem_ke():
 def nhan_vien():
     P = []
     A, G, Q, S = C['ao_nv'], C['gile_nv'], C['quan_nv'], C['da_nv']
-    for sx in (-1, 1):
+    for sx, sd in ((1, 'L'), (-1, 'R')):
+        bo('cang.' + sd)
         box(P, (0.11, 0.25, 0.08), (sx * 0.1, -0.03, 0.04), C['cao_su'], bev=0.012)
-        limb(P, (sx * 0.1, 0, 0.08), (sx * 0.11, 0, 0.82), 0.065, Q, r2=0.08)
+        limb(P, (sx * 0.1, 0, 0.08), (sx * 0.105, 0, 0.45), 0.065, Q, r2=0.072)
+        ball(P, 0.072, (sx * 0.105, 0, 0.45), Q)
+        bo('dui.' + sd)
+        limb(P, (sx * 0.105, 0, 0.45), (sx * 0.11, 0, 0.84), 0.072, Q, r2=0.08)
+    bo('hong')
     box(P, (0.34, 0.21, 0.15), (0, 0, 0.85), Q)
+    bo('than')
     t = cyl(P, 0.19, 0.58, (0, 0, 1.2), G, n=8, r2=0.22)                           # gilê đỏ đồng phục
     t.scale = (1, 0.66, 1)
     box(P, (0.07, 0.03, 0.14), (0, -0.125, 1.42), A)                                # cổ áo sơ mi lộ ra
     box(P, (0.2, 0.05, 0.05), (0, -0.09, 1.48), A)
     box(P, (0.09, 0.012, 0.055), (0.1, -0.145, 1.34), C['giay'])                  # thẻ nhân viên
+    bo('co')
     limb(P, (0, 0, 1.48), (0, 0, 1.56), 0.05, S)
+    bo('dau')
     ball(P, 0.115, (0, -0.01, 1.66), S, scale=(0.95, 1.0, 1.1))
     ball(P, 0.12, (0, 0.015, 1.71), C['toc'], scale=(1.0, 1.0, 0.75))              # tóc
-    for sx in (-1, 1):
+    for sx, sd in ((1, 'L'), (-1, 'R')):
+        bo('tay_tren.' + sd)
         limb(P, (sx * 0.24, 0, 1.44), (sx * 0.27, 0, 1.12), 0.05, A, r2=0.045)
+        bo('tay_duoi.' + sd)
+        ball(P, 0.044, (sx * 0.27, 0, 1.12), S)
         limb(P, (sx * 0.27, 0, 1.12), (sx * 0.26, -0.06, 0.86), 0.042, S, r2=0.036)
         box(P, (0.05, 0.08, 0.1), (sx * 0.26, -0.07, 0.8), S)
+    bo('may_quet_tay')                                                            # máy quét, chĩa theo cẳng tay
+    box(P, (0.045, 0.05, 0.09), (0.26, -0.07, 0.8 - 0.06), C['nhua_den'])
+    box(P, (0.07, 0.07, 0.13), (0.26, -0.07 - 0.02, 0.8 - 0.15), C['nhua_xam'], bev=0.008)
+    box(P, (0.05, 0.03, 0.01), (0.26, -0.07 - 0.02, 0.8 - 0.218), C['den_do'])
+    bo('den_pin_tay')                                                             # đèn pin, đầu đèn theo cẳng tay
+    cyl(P, 0.024, 0.15, (-0.26, -0.07, 0.8 - 0.09), C['nhua_den'], n=8)
+    cyl(P, 0.026, 0.05, (-0.26, -0.07, 0.8 - 0.18), C['nhom'], n=8, r2=0.038)
+    cyl(P, 0.034, 0.006, (-0.26, -0.07, 0.8 - 0.207), C['den_vang'], n=8)
     return finish(P, 'nhan_vien', 'Nhân viên ca đêm',
                   'Cao 1,72 m, gilê đỏ đồng phục, thẻ nhân viên trước ngực. Đổi màu gilê/tóc trong game để phân biệt 4 người chơi.')
 
@@ -427,20 +473,601 @@ def hop_sua():
     box(P, (w, 0.006, 0.012), (0, 0, h + g + 0.004), C['sua_trang'])
     return finish(P, 'hh_hop_sua', 'Hộp sữa giấy', 'Cao 18 cm, nắp mái nhà.')
 
-builders = [ke_hang, nguoi_kiem_ke, nhan_vien, thung_carton, tu_mat, quay_thu_ngan, bang_dong_lanh,
-            may_cham_cong, the_nhan_vien, may_quet, xe_day, lon_nuoc, hop_banh, chai_nuoc, goi_mi, hop_sua]
+# 3b. Nhân viên bản ngố (để so sánh): lùn, đầu to, tay to, mắt chấm, thẻ đeo cổ to đung đưa
+def nhan_vien_ngo():
+    P = []
+    A, G, Q, S = C['ao_nv'], C['gile_nv'], C['quan_nv'], C['da_nv']
+    for sx, sd in ((1, 'L'), (-1, 'R')):
+        bo('cang.' + sd)
+        box(P, (0.15, 0.3, 0.1), (sx * 0.12, -0.04, 0.05), C['cao_su'], bev=0.025)
+        limb(P, (sx * 0.12, 0, 0.1), (sx * 0.12, 0, 0.31), 0.075, Q, r2=0.08)
+        ball(P, 0.08, (sx * 0.12, 0, 0.31), Q)
+        bo('dui.' + sd)
+        limb(P, (sx * 0.12, 0, 0.31), (sx * 0.12, 0, 0.52), 0.08, Q, r2=0.09)
+    bo('hong')
+    box(P, (0.42, 0.3, 0.16), (0, 0, 0.55), Q, bev=0.02)
+    bo('than')
+    t = cyl(P, 0.28, 0.56, (0, 0, 0.88), G, n=10, r2=0.25)                        # gilê thùng thình
+    t.scale = (1, 0.78, 1)
+    box(P, (0.16, 0.05, 0.1), (0, -0.19, 1.12), A)                                # cổ áo
+    box(P, (0.06, 0.03, 0.06), (0.17, -0.2, 0.75), C['tem_gia'])                  # cúc áo / túi
+    box(P, (0.06, 0.03, 0.06), (-0.17, -0.2, 0.75), C['tem_gia'])
+    bo('co')
+    limb(P, (0, 0, 1.14), (0, 0, 1.2), 0.07, S)
+    bo('dau')
+    ball(P, 0.23, (0, 0, 1.38), S, sub=2)                                         # đầu to tròn
+    for sx in (-1, 1):
+        box(P, (0.045, 0.03, 0.075), (sx * 0.085, -0.205, 1.39), C['nhua_den'])  # mắt chấm
+    box(P, (0.06, 0.02, 0.015), (0, -0.22, 1.29), C['banh_nau'])                  # miệng
+    cyl(P, 0.225, 0.13, (0, 0, 1.55), G, n=12)                                    # mũ đồng phục
+    box(P, (0.3, 0.2, 0.025), (0, -0.25, 1.5), G, rot=(0.12, 0, 0))              # lưỡi trai
+    bo('day_the')                                                                 # dây + thẻ to, đung đưa
+    limb(P, (-0.08, -0.17, 1.12), (0, -0.235, 0.86), 0.012, C['sua_xanh'], n=4)
+    limb(P, (0.08, -0.17, 1.12), (0, -0.235, 0.86), 0.012, C['sua_xanh'], n=4)
+    box(P, (0.16, 0.015, 0.2), (0, -0.24, 0.76), C['giay'])
+    box(P, (0.16, 0.017, 0.04), (0, -0.24, 0.84), C['thuong_hieu'])
+    box(P, (0.05, 0.017, 0.06), (-0.04, -0.24, 0.74), C['nhua_xam'])
+    for sx, sd in ((1, 'L'), (-1, 'R')):
+        bo('tay_tren.' + sd)
+        limb(P, (sx * 0.29, 0, 1.1), (sx * 0.34, 0, 0.88), 0.07, A, r2=0.06)
+        ball(P, 0.075, (sx * 0.29, 0, 1.1), A)
+        bo('tay_duoi.' + sd)
+        limb(P, (sx * 0.34, 0, 0.88), (sx * 0.34, -0.03, 0.69), 0.055, S, r2=0.05)
+        box(P, (0.11, 0.12, 0.13), (sx * 0.34, -0.04, 0.62), S, bev=0.03)        # bàn tay to (găng)
+
+    bo('may_quet_tay')                                                            # máy quét, chĩa theo cẳng tay
+    box(P, (0.045, 0.05, 0.09), (0.34, -0.05, 0.6 - 0.06), C['nhua_den'])
+    box(P, (0.07, 0.07, 0.13), (0.34, -0.05 - 0.02, 0.6 - 0.15), C['nhua_xam'], bev=0.008)
+    box(P, (0.05, 0.03, 0.01), (0.34, -0.05 - 0.02, 0.6 - 0.218), C['den_do'])
+    bo('den_pin_tay')                                                             # đèn pin, đầu đèn theo cẳng tay
+    cyl(P, 0.024, 0.15, (-0.34, -0.05, 0.6 - 0.09), C['nhua_den'], n=8)
+    cyl(P, 0.026, 0.05, (-0.34, -0.05, 0.6 - 0.18), C['nhom'], n=8, r2=0.038)
+    cyl(P, 0.034, 0.006, (-0.34, -0.05, 0.6 - 0.207), C['den_vang'], n=8)
+    bo('thung')                                                                   # thùng chỉ hiện khi "đóng thùng"
+    box(P, (0.8, 0.8, 0.9), (0, 0.2, 0.45), C['carton'], bev=0.015)
+    box(P, (0.14, 0.82, 0.008), (0, 0.2, 0.902), C['bang_keo'])
+    box(P, (0.34, 0.006, 0.18), (0, -0.203, 0.6), C['giay'])
+    for i in range(3):
+        box(P, (0.26, 0.004, 0.018), (0, -0.207, 0.65 - i * 0.045), C['nhua_den'])
+    return finish(P, 'nhan_vien_ngo', 'Nhân viên (bản ngố)',
+                  'Cao 1,61 m, đầu và tay to, mắt chấm, gilê rộng, thẻ đeo cổ to đung đưa. Có sẵn thùng carton ẩn để diễn cảnh "đóng thùng".')
+
+def den_pin():
+    P = []
+    cyl(P, 0.022, 0.15, (0, 0, 0.022), C['nhua_den'], n=10, rot=(math.pi / 2, 0, 0))
+    cyl(P, 0.024, 0.05, (0, -0.1, 0.022), C['nhom'], n=10, rot=(math.pi / 2, 0, 0), r2=0.036)
+    cyl(P, 0.033, 0.006, (0, -0.128, 0.022), C['den_vang'], n=10, rot=(math.pi / 2, 0, 0))
+    box(P, (0.014, 0.03, 0.01), (0, 0.01, 0.046), C['thuong_hieu'])
+    return finish(P, 'den_pin', 'Đèn pin', 'Dài 18 cm. Mỗi người một cái, dùng khi siêu thị mất điện.')
+
+builders = [ke_hang, nguoi_kiem_ke, nhan_vien, nhan_vien_ngo,thung_carton, tu_mat, quay_thu_ngan, bang_dong_lanh,
+            may_cham_cong, the_nhan_vien, may_quet, den_pin, xe_day, lon_nuoc, hop_banh, chai_nuoc, goi_mi, hop_sua]
 for b in builders:
     b()
+
+# ================================================================ XƯƠNG + CHUYỂN ĐỘNG
+# Góc khai báo theo trục THẾ GIỚI (độ), Blender: X ngang, Y ra sau (mặt trước là -Y), Z lên.
+#   Xương chĩa xuống (đùi, cẳng, tay): rx âm = đưa ra trước, rx dương = ra sau.
+#   Xương chĩa lên (thân, đầu):        rx dương = cúi tới trước, rx âm = ngửa ra sau.
+#   rz dương = xoay sang phía +X (bên .L). ry = nghiêng sang bên.
+from mathutils import Euler, Matrix
+
+FPS = 30
+scene.render.fps = FPS
+bpy.context.preferences.edit.keyframe_new_interpolation_type = 'LINEAR'
+RIGS = {}       # tên model -> armature
+ACTIONS = {}    # tên model -> [action]
+
+def clamp01(x):
+    return max(0.0, min(1.0, x))
+
+def seg(t, a, b):
+    """0 trước a, 1 sau b, mượt ở giữa."""
+    u = clamp01((t - a) / (b - a))
+    return u * u * (3 - 2 * u)
+
+def snap(t, a, b):
+    """Giật nhanh rồi hãm (ease-out mạnh)."""
+    u = clamp01((t - a) / (b - a))
+    return 1 - (1 - u) ** 4
+
+def pulse(t, c, w=0.06):
+    return math.exp(-((t - c) / w) ** 2)
+
+def make_rig(o, name, bones):
+    ad = bpy.data.armatures.new(name + '_xuong')
+    arm = bpy.data.objects.new(name + '_rig', ad)
+    scene.collection.objects.link(arm)
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.context.view_layer.objects.active = arm
+    arm.select_set(True)
+    bpy.ops.object.mode_set(mode='EDIT')
+    for bn, h, t, par in bones:
+        e = ad.edit_bones.new(bn)
+        e.head, e.tail, e.roll = h, t, 0.0
+        if par:
+            e.parent = ad.edit_bones[par]
+    bpy.ops.object.mode_set(mode='OBJECT')
+    o.parent = arm
+    mod = o.modifiers.new('xuong', 'ARMATURE')
+    mod.object = arm
+    for pb in arm.pose.bones:
+        pb.rotation_mode = 'QUATERNION'
+    arm.animation_data_create()
+    RIGS[o.name] = arm
+    return arm
+
+def make_clips(arm, model_name, clips, loc_bones=('goc',), scales=None):
+    scales = scales or {}
+    Bm = {b.name: b.matrix_local.to_3x3() for b in arm.data.bones}
+    names = list(Bm)
+    acts = []
+    for cname, secs, fn in clips:
+        act = bpy.data.actions.new(f'{model_name}__{cname}')
+        act['clip'] = cname
+        act.use_fake_user = True
+        arm.animation_data.action = act
+        prev = {}
+        n = round(secs * FPS)
+        for f in range(n + 1):
+            t = f / FPS
+            d = fn(t, secs)
+            for bn in names:
+                rx, ry, rz = d.get(bn, (0, 0, 0))
+                Rw = Euler((math.radians(rx), math.radians(ry), math.radians(rz)), 'XYZ').to_matrix()
+                q = (Bm[bn].inverted() @ Rw @ Bm[bn]).to_quaternion()
+                if bn in prev:
+                    q.make_compatible(prev[bn])
+                prev[bn] = q
+                pb = arm.pose.bones[bn]
+                pb.rotation_quaternion = q
+                pb.keyframe_insert('rotation_quaternion', frame=f + 1)
+            for bn in loc_bones:   # '_loc' cho xương gốc, '@tên' cho xương khác (toạ độ thế giới)
+                v = d.get('_loc', (0, 0, 0)) if bn == 'goc' else d.get('@' + bn, (0, 0, 0))
+                pb = arm.pose.bones[bn]
+                pb.location = Bm[bn].inverted() @ Vector(v)
+                pb.keyframe_insert('location', frame=f + 1)
+            for bn, dv in scales.items():   # '%tên' = tỉ lệ đều
+                s = d.get('%' + bn, dv)
+                pb = arm.pose.bones[bn]
+                pb.scale = (s, s, s)
+                pb.keyframe_insert('scale', frame=f + 1)
+        arm.animation_data.action = None
+        acts.append(act)
+    ACTIONS[model_name] = acts
+    reset_pose(arm)
+
+REST_SCALE = {}  # armature -> {xương: tỉ lệ ở tư thế nghỉ}
+
+def reset_pose(arm):
+    for pb in arm.pose.bones:
+        pb.rotation_quaternion = (1, 0, 0, 0)
+        pb.location = (0, 0, 0)
+        s = REST_SCALE.get(arm.name, {}).get(pb.name, 1.0)
+        pb.scale = (s, s, s)
+
+def legs_walk(d, p, A, K, base_knee=4.0):
+    for sd, ph in (('L', p), ('R', p + math.pi)):
+        d['dui.' + sd] = (-A * math.sin(ph), 0, 0)
+        d['cang.' + sd] = (base_knee + K * max(0.0, math.cos(ph)) ** 2, 0, 0)
+
+def leg_comp(a, b, Lt, Ls):
+    """Bù vị trí gốc để bàn chân đứng yên khi gập đùi a và gối b (độ)."""
+    a, ab = math.radians(a), math.radians(a + b)
+    ny = Lt * math.sin(a) + Ls * math.sin(ab)
+    nz = -Lt * math.cos(a) - Ls * math.cos(ab)
+    return (0.0, -ny, -(Lt + Ls) - nz)
+
+# ---------- Người Kiểm Kê: chậm, đều, cứng, không bao giờ chạy
+def kk_di(t, T):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 17, 26)
+    d['hong'] = (0, 3 * s, 4 * s)
+    d['than'] = (4, 0, -3 * s)
+    d['tay_tren.R'] = (-5 * s, 0, 0)
+    d['tay_duoi.R'] = (-2 - 3 * math.sin(p - 0.5), 0, 0)
+    d['tay_tren.L'] = (1.5 * math.sin(2 * p), 0, 0)
+    tick = 7 * pulse(t / T, 0.62, 0.025)      # đầu giật nhẹ một nhịp mỗi chu kỳ
+    d['dau'] = (0, 0, 2 * s + tick)
+    d['_loc'] = (0, 0, -0.022 * s * s)
+    return d
+
+def kk_chay(t, T):
+    """Chạy cứng đơ: sải dài, tay cầm máy quét khoá cứng phía trước, tay kia bị kéo lê ra sau."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 34, 70, base_knee=8)
+    d['hong'] = (0, 2 * s, 3 * s)
+    d['than'] = (12, 0, -2 * s)
+    d['dau'] = (-10, 0, 0)                     # đầu khoá cứng, nhìn thẳng
+    d['tay_tren.L'] = (-8, 0, 0)
+    d['tay_tren.R'] = (18 + 3 * s, 0, 0)
+    d['tay_duoi.R'] = (6, 0, 0)
+    d['_loc'] = (0, 0, -0.04 * s * s)
+    return d
+
+def kk_dung(t, T):
+    p = 2 * math.pi * t / T
+    return {
+        'than': (1.0 * math.sin(p), 0, 0),
+        'dau': (0, 5 * math.sin(p), 1.5 * math.sin(2 * p)),
+        'tay_tren.L': (2 * math.sin(p + 1), 0, 0),
+        'tay_tren.R': (0.8 * math.sin(p + 2), 0, 0),
+    }
+
+def kk_quet(t, T):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    return {
+        'hong': (0, 0, 4 * s),
+        'than': (3, 0, 14 * s),
+        'dau': (-5, 0, 22 * math.sin(p - 0.6)),
+        'tay_tren.L': (-12, 0, 8 * s),
+        'tay_duoi.L': (-4, 0, 0),
+        'tay_tren.R': (0, 0, -2 * s),
+    }
+
+def kk_quay_dau(t, T):
+    back = seg(t, 1.8, 2.4)
+    sn = snap(t, 0.35, 0.47) * (1 - back)
+    fol = seg(t, 0.8, 1.4) * (1 - back)
+    total = 80 * sn
+    spine = 35 * fol
+    jit = 2.0 * math.sin(t * 55) * (seg(t, 0.47, 0.6) - seg(t, 1.6, 1.8))
+    return {
+        'than': (0, 0, spine),
+        'dau': (0, 12 * sn, total - spine + jit),
+        'tay_tren.L': (-6 * fol, 0, 15 * fol),
+        'tay_tren.R': (0, 0, 4 * fol),
+    }
+
+def kk_dem(t, T):
+    up = seg(t, 0.0, 0.45) * (1 - seg(t, 2.5, 2.8))
+    p1, p2 = pulse(t, 1.0), pulse(t, 1.8)      # "Một…"  "Hai…"
+    return {
+        'than': (16 * up + 5 * (p1 + p2), 0, 0),
+        'dau': (-18 * up, 22 * up, 6 * p1 - 6 * p2),
+        'tay_tren.L': (-30 * up, 0, 0),
+        'tay_duoi.L': (-10 * up - 3 * (p1 + p2), 0, 0),
+        'tay_tren.R': (-4 * up, 0, 0),
+    }
+
+# ---------- Nhân viên
+NV_LT, NV_LS = 0.39, 0.37
+
+def nv_dung(t, T):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    return {
+        'than': (1.2 * s, 0, 0),
+        'dau': (0, 0, 3 * math.sin(p * 0.5) ** 3),
+        'tay_tren.L': (1.5 * s, 0, 0), 'tay_tren.R': (1.5 * s, 0, 0),
+        'tay_duoi.L': (-6, 0, 0), 'tay_duoi.R': (-6, 0, 0),
+        '_loc': (0, 0, 0.004 * s),
+    }
+
+def nv_walk(t, T, A, K, arm, elbow, lean, bob):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, A, K)
+    d['hong'] = (0, 0, 6 * s)
+    d['than'] = (lean, 0, -5 * s)
+    d['dau'] = (-lean * 0.5, 0, 3 * s)
+    for sd, sign in (('L', -1), ('R', 1)):
+        f = sign * s                       # tay ngược pha với chân cùng bên
+        d['tay_tren.' + sd] = (-arm * f, 0, 0)
+        d['tay_duoi.' + sd] = (-elbow - 0.4 * arm * max(0.0, f), 0, 0)
+    d['_loc'] = (0, 0, -bob * s * s)
+    return d
+
+def nv_di(t, T):
+    return nv_walk(t, T, 24, 50, 20, 10, 3, 0.03)
+
+def nv_chay(t, T):
+    return nv_walk(t, T, 40, 85, 38, 75, 12, 0.05)
+
+def nv_be_thung(t, T):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 18, 38)
+    bounce = 2 * math.sin(2 * p)
+    d['hong'] = (0, 0, 4 * s)
+    d['than'] = (-5, 0, -3 * s)
+    d['tay_tren.L'] = (-50 + bounce, 10, 0)
+    d['tay_tren.R'] = (-50 + bounce, -10, 0)
+    d['tay_duoi.L'] = (-50, 0, 0)
+    d['tay_duoi.R'] = (-50, 0, 0)
+    d['_loc'] = (0, 0, -0.02 * s * s)
+    return d
+
+def quet_mot_tay(t, T, extra=None):
+    """Một tay (.L) cầm máy quét chĩa vào kệ, quét qua lại; tay kia buông thả."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {
+        'than': (4, 0, 5 * s),
+        'dau': (12, 0, 8 * math.sin(p - 0.4)),
+        'tay_tren.L': (-62, 0, 12 * s),
+        'tay_duoi.L': (-26, 0, 0),
+        'tay_tren.R': (2 * s, 4, 0),
+        'tay_duoi.R': (-8, 0, 0),
+        '%may_quet_tay': 1.0,
+    }
+    if extra:
+        d.update(extra)
+    return d
+
+def nv_quet_hang(t, T):
+    return quet_mot_tay(t, T)
+
+def cam_den(d, t, T, walking):
+    """Tay .R cầm đèn pin chĩa tới trước, soi qua lại; đầu ngó theo."""
+    p = 2 * math.pi * t / T
+    sweep = 9 * math.sin(p) if walking else 26 * math.sin(p)
+    d['tay_tren.R'] = (-58 + (2 * math.sin(2 * p) if walking else 0), 0, sweep * 0.6)
+    d['tay_duoi.R'] = (-30, 0, sweep * 0.4)
+    old = d.get('dau', (0, 0, 0))
+    d['dau'] = (old[0] + 4, old[1], old[2] + sweep * 0.7)
+    th = d.get('than', (0, 0, 0))
+    d['than'] = (th[0] + 6, th[1], th[2])            # hơi khom, rón rén
+    d['%den_pin_tay'] = 1.0
+    return d
+
+def nv_di_den_pin(t, T):
+    return cam_den(nv_walk(t, T, 20, 42, 14, 10, 0, 0.025), t, T, True)
+
+def nv_dung_den_pin(t, T):
+    return cam_den(nv_dung(t, T), t, T, False)
+
+def nv_dong_thung(t, T):
+    st = seg(t, 0.0, 0.15) * (1 - seg(t, 0.55, 0.75))   # giãy giụa
+    u = seg(t, 0.6, 1.4)                                 # co người lại như bị nhét vào thùng
+    shake = math.sin(t * 32)
+    tremble = 1.5 * math.sin(t * 50) * u
+    a, b = -100 * u, 130 * u
+    d = {
+        'dui.L': (a, 0, 0), 'dui.R': (a, 0, 0),
+        'cang.L': (b, 0, 0), 'cang.R': (b, 0, 0),
+        'than': (45 * u + tremble, 0, 8 * shake * st),
+        'dau': (25 * u - 10 * st, 0, 10 * math.sin(t * 27) * st),
+        'tay_tren.L': (-70 * st + 20 * shake * st - 40 * u, 20 * st + 25 * u, 0),
+        'tay_tren.R': (-70 * st - 20 * shake * st - 40 * u, -20 * st - 25 * u, 0),
+        'tay_duoi.L': (-30 * st - 100 * u, 0, 0),
+        'tay_duoi.R': (-30 * st - 100 * u, 0, 0),
+    }
+    d['_loc'] = leg_comp(a, b, NV_LT, NV_LS)
+    return d
+
+def bones_human(hip_z, chest, neck_top, head_top, head_y, shoulders, elbows, wrists, knees, ankles, hips_x=0.1):
+    B = [('goc', (0, 0, 0), (0, 0, 0.2), None),
+         ('hong', (0, 0, hip_z), (0, 0, hip_z + 0.1), 'goc'),
+         ('than', (0, 0, hip_z + 0.1), (0, 0, chest), 'hong'),
+         ('co', (0, 0, chest), (0, head_y[0], neck_top), 'than'),
+         ('dau', (0, head_y[0], neck_top), (0, head_y[1], head_top), 'co')]
+    for sd in ('L', 'R'):
+        sx = 1 if sd == 'L' else -1
+        B.append(('tay_tren.' + sd, shoulders[sd], elbows[sd], 'than'))
+        B.append(('tay_duoi.' + sd, elbows[sd], wrists[sd], 'tay_tren.' + sd))
+        B.append(('dui.' + sd, (sx * hips_x, 0, hip_z), knees[sd], 'hong'))
+        B.append(('cang.' + sd, knees[sd], ankles[sd], 'dui.' + sd))
+    return B
+
+objs = {o.name: o for o, _ in MODELS}
+metas = {m['file'][:-4]: m for _, m in MODELS}
+
+arm = make_rig(objs['nguoi_kiem_ke'], 'nguoi_kiem_ke', bones_human(
+    0.98, 1.7, 1.86, 2.1, (-0.03, -0.07),
+    shoulders={'L': (0.25, 0, 1.66), 'R': (-0.25, 0, 1.66)},
+    elbows={'L': (0.28, -0.04, 1.3), 'R': (-0.29, 0.01, 1.25)},
+    wrists={'L': (0.15, -0.38, 1.25), 'R': (-0.27, -0.02, 0.8)},
+    knees={'L': (0.105, 0, 0.53), 'R': (-0.105, 0, 0.53)},
+    ankles={'L': (0.1, 0, 0.07), 'R': (-0.1, 0, 0.07)}, hips_x=0.11))
+KK_CLIPS = [('di', 1.8, kk_di, 'Đi tuần (chậm, đều)', True),
+            ('chay', 0.8, kk_chay, 'Chạy (khi mất điện, nghe tiếng động)', True),
+            ('dung_im', 4.0, kk_dung, 'Đứng im', True),
+            ('quet', 3.2, kk_quet, 'Quét qua lại', True),
+            ('quay_dau', 2.4, kk_quay_dau, 'Quay đầu giật (nghe tiếng động)', True),
+            ('dem', 2.8, kk_dem, 'Đếm "Một… Hai…"', True)]
+make_clips(arm, 'nguoi_kiem_ke', [(c[0], c[1], c[2]) for c in KK_CLIPS])
+metas['nguoi_kiem_ke']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in KK_CLIPS]
+
+arm = make_rig(objs['nhan_vien'], 'nhan_vien', bones_human(
+    0.84, 1.48, 1.56, 1.8, (0.0, -0.01),
+    shoulders={'L': (0.24, 0, 1.44), 'R': (-0.24, 0, 1.44)},
+    elbows={'L': (0.27, 0, 1.12), 'R': (-0.27, 0, 1.12)},
+    wrists={'L': (0.26, -0.06, 0.86), 'R': (-0.26, -0.06, 0.86)},
+    knees={'L': (0.105, 0, 0.45), 'R': (-0.105, 0, 0.45)},
+    ankles={'L': (0.1, 0, 0.08), 'R': (-0.1, 0, 0.08)}, hips_x=0.11) + [
+    ('may_quet_tay', (0.26, -0.07, 0.8), (0.26, -0.07, 0.6), 'tay_duoi.L'),
+    ('den_pin_tay', (-0.26, -0.07, 0.8), (-0.26, -0.07, 0.6), 'tay_duoi.R')])
+NV_CLIPS = [('dung', 3.0, nv_dung, 'Đứng thở', True),
+            ('di', 1.0, nv_di, 'Đi', True),
+            ('chay', 0.66, nv_chay, 'Chạy', True),
+            ('be_thung', 1.2, nv_be_thung, 'Bê thùng đi', True),
+            ('quet_hang', 2.4, nv_quet_hang, 'Quét hàng (1 tay)', True),
+            ('di_den_pin', 1.15, nv_di_den_pin, 'Đi soi đèn pin (mất điện)', True),
+            ('dung_den_pin', 4.0, nv_dung_den_pin, 'Đứng soi đèn pin', True),
+            ('dong_thung', 2.2, nv_dong_thung, 'Bị "đóng thùng"', False)]
+REST_SCALE[arm.name] = {'may_quet_tay': 0.0, 'den_pin_tay': 0.0}
+make_clips(arm, 'nhan_vien', [(c[0], c[1], c[2]) for c in NV_CLIPS],
+           scales={'may_quet_tay': 0.0, 'den_pin_tay': 0.0})
+metas['nhan_vien']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in NV_CLIPS]
+
+# ---------- Nhân viên bản ngố: lạch bạch, lố, hoảng loạn
+def ngo_dung(t, T):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    return {
+        'hong': (0, 3 * s, 0),
+        'than': (1.5 * math.sin(2 * p), -2 * s, 0),
+        'dau': (0, -4 * s, 8 * math.sin(p + 0.7) ** 3),
+        'tay_tren.L': (2 * math.sin(2 * p), -10, 0), 'tay_tren.R': (2 * math.sin(2 * p), 10, 0),
+        'tay_duoi.L': (-8, 0, 0), 'tay_duoi.R': (-8, 0, 0),
+        'day_the': (3 * math.sin(2 * p - 1), 0, 0),
+        '_loc': (0, 0, 0.006 * math.sin(2 * p)),
+    }
+
+def ngo_lach_bach(t, T, A, K, arm, bob, lean=0.0, carry=False):
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, A, K)
+    d['hong'] = (0, 9 * s, 7 * s)                       # lắc hông kiểu chim cánh cụt
+    d['than'] = (lean, -4 * s, -6 * s)
+    d['dau'] = (-lean * 0.5, -6 * s, 5 * math.sin(p - 0.8))
+    if carry:
+        for sd, sy in (('L', 12), ('R', -12)):
+            d['tay_tren.' + sd] = (-55 + 3 * math.sin(2 * p), sy, 0)
+            d['tay_duoi.' + sd] = (-45, 0, 0)
+    else:
+        for sd, sign, out in (('L', -1, -14), ('R', 1, 14)):
+            d['tay_tren.' + sd] = (-arm * sign * s, out, 0)   # tay xoè, vung cứng đơ
+            d['tay_duoi.' + sd] = (-4, 0, 0)
+    d['day_the'] = (12 * math.sin(2 * p - 1.2) + 4, 0, 6 * math.sin(p - 1))
+    d['_loc'] = (0.035 * s, 0, -bob * s * s)
+    return d
+
+def ngo_di(t, T):
+    return ngo_lach_bach(t, T, 24, 45, 30, 0.045)
+
+def ngo_be_thung(t, T):
+    return ngo_lach_bach(t, T, 18, 35, 0, 0.035, lean=-6, carry=True)
+
+def ngo_chay(t, T):
+    """Chạy hớt hải: khuỳnh tay đánh mạnh trước sau, người đổ tới, đầu lắc lư."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 44, 100)
+    d['hong'] = (0, 7 * s, 10 * s)
+    d['than'] = (18, -5 * s, -9 * s)
+    d['dau'] = (-12, 9 * s, 7 * math.sin(2 * p))
+    for sd, sign, out in (('L', -1, -18), ('R', 1, 18)):
+        f = sign * s
+        d['tay_tren.' + sd] = (-58 * f - 10, out, 0)
+        d['tay_duoi.' + sd] = (-85 + 18 * math.sin(2 * p + (0 if sd == 'L' else 1.5)), 0, 0)
+    d['day_the'] = (40 + 15 * math.sin(2 * p), 0, 10 * s)             # thẻ bay ngược ra sau
+    d['_loc'] = (0.03 * s, 0, -0.06 * s * s)
+    return d
+
+def ngo_vay_tay(t, T):
+    p = 2 * math.pi * t / T
+    w = math.sin(3 * p)
+    return {
+        'than': (0, -6, 0),
+        'dau': (0, 10, 4 * w),
+        'tay_tren.R': (0, 150 + 22 * w, 0),             # cả cánh tay vẫy qua lại trên đầu
+        'tay_duoi.R': (0, 6 * w, 0),
+        'tay_tren.L': (-10, -25, 0),
+        'tay_duoi.L': (-50, 0, 0),
+        'day_the': (4 * math.sin(2 * p), 0, 6 * w),
+        '_loc': (0, 0, 0.03 * abs(math.sin(p))),
+    }
+
+def ngo_chi_tay(t, T):
+    j = pulse(t, 0.35, 0.05) + pulse(t, 0.65, 0.05)   # "Ở ĐÓ! Ở ĐÓ!"
+    return {
+        'than': (8 + 6 * j, 0, 10),
+        'dau': (-8 - 4 * j, 0, 6),
+        'tay_tren.L': (-95 - 10 * j, 0, 0),
+        'tay_duoi.L': (0, 0, 0),
+        'tay_tren.R': (-10, 20, 0),
+        'tay_duoi.R': (-40, 0, 0),
+        'day_the': (-12 * j + 3, 0, 0),
+        '_loc': (0, 0, 0.02 * j),
+    }
+
+def ngo_cui_chao(t, T):
+    b = seg(t, 0.1, 0.35) * (1 - seg(t, 0.55, 0.8)) + seg(t, 1.0, 1.2) * (1 - seg(t, 1.45, 1.75))
+    return {
+        'than': (55 * b, 0, 0),
+        'dau': (15 * b, 0, 0),
+        'tay_tren.L': (-20, 20, 0), 'tay_tren.R': (-20, -20, 0),   # hai tay khép trước bụng
+        'tay_duoi.L': (-55, 0, 0), 'tay_duoi.R': (-55, 0, 0),
+        'day_the': (-50 * b + 6 * math.sin(t * 14) * b, 0, 0),         # thẻ rủ thẳng xuống
+    }
+
+def ngo_dong_thung(t, T):
+    st = seg(t, 0.0, 0.12) * (1 - seg(t, 0.5, 0.6))    # giãy, ngó lên thấy thùng rơi
+    sh = math.sin(t * 32)
+    sit = snap(t, 0.5, 0.6)                            # ngồi phịch xuống
+    look = seg(t, 0.15, 0.3) * (1 - sit)
+    fall = clamp01((t - 0.45) / 0.25)
+    land = max(0.0, t - 0.7)
+    wob = math.exp(-land * 5) * math.sin(land * 30) if t > 0.7 else 0.0
+    kick = (1.0 if t > 0.78 else 0.0) * (1 - seg(t, 1.9, 2.4))
+    kL = max(0.0, math.sin(t * 16)) * kick
+    kR = max(0.0, math.sin(t * 16 + math.pi)) * kick
+    return {
+        'than': (6 * sit, 0, 8 * sh * st),
+        'dau': (-30 * look + 15 * sit, 0, 10 * math.sin(t * 27) * st),
+        'tay_tren.L': (-120 * st + 30 * sh * st - 20 * sit, -15 * st + 15 * sit, 0),
+        'tay_tren.R': (-120 * st - 30 * sh * st - 20 * sit, 15 * st - 15 * sit, 0),
+        'tay_duoi.L': (-30 * st - 50 * sit, 0, 0), 'tay_duoi.R': (-30 * st - 50 * sit, 0, 0),
+        'dui.L': (-90 * sit - 14 * kL, 0, 0), 'dui.R': (-90 * sit - 14 * kR, 0, 0),
+        'cang.L': (-30 * kL, 0, 0), 'cang.R': (-30 * kR, 0, 0),           # hai chân thò ra đạp
+        'day_the': (20 * st * sh, 0, 0),
+        'thung': (0, 4 * wob, 2 * wob),
+        '_loc': (0, 0.15 * sit, -0.4 * sit),
+        '@thung': (0, 0, 2.0 * (1 - fall * fall)),
+        '%thung': seg(t, 0.25, 0.35) * (1 + 0.08 * wob),
+        '%than': 1 - 0.32 * sit,                                         # bị ép bẹp trong thùng
+    }
+
+B_NGO = bones_human(
+    0.52, 1.14, 1.2, 1.62, (0.0, 0.0),
+    shoulders={'L': (0.29, 0, 1.1), 'R': (-0.29, 0, 1.1)},
+    elbows={'L': (0.34, 0, 0.88), 'R': (-0.34, 0, 0.88)},
+    wrists={'L': (0.34, -0.03, 0.69), 'R': (-0.34, -0.03, 0.69)},
+    knees={'L': (0.12, 0, 0.31), 'R': (-0.12, 0, 0.31)},
+    ankles={'L': (0.12, 0, 0.1), 'R': (-0.12, 0, 0.1)}, hips_x=0.12)
+B_NGO += [('day_the', (0, -0.2, 1.12), (0, -0.24, 0.86), 'than'),
+          ('thung', (0, 0.2, 0), (0, 0.2, 0.3), None),
+          ('may_quet_tay', (0.34, -0.05, 0.6), (0.34, -0.05, 0.4), 'tay_duoi.L'),
+          ('den_pin_tay', (-0.34, -0.05, 0.6), (-0.34, -0.05, 0.4), 'tay_duoi.R')]
+arm = make_rig(objs['nhan_vien_ngo'], 'nhan_vien_ngo', B_NGO)
+REST_SCALE[arm.name] = {'thung': 0.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0}
+NGO_CLIPS = [('dung', 2.6, ngo_dung, 'Đứng (đung đưa)', True),
+             ('di', 0.9, ngo_di, 'Đi lạch bạch', True),
+             ('chay', 0.5, ngo_chay, 'Chạy giơ tay la hét', True),
+             ('be_thung', 1.0, ngo_be_thung, 'Bê thùng đi', True),
+             ('quet_hang', 2.4, lambda t, T: quet_mot_tay(t, T, {'day_the': (6, 0, 0)}), 'Quét hàng (1 tay)', True),
+             ('di_den_pin', 1.05, lambda t, T: cam_den(ngo_lach_bach(t, T, 20, 38, 18, 0.035), t, T, True), 'Đi soi đèn pin (mất điện)', True),
+             ('dung_den_pin', 4.0, lambda t, T: cam_den(ngo_dung(t, T), t, T, False), 'Đứng soi đèn pin', True),
+             ('vay_tay', 1.6, ngo_vay_tay, 'Vẫy tay', True),
+             ('chi_tay', 1.2, ngo_chi_tay, 'Chỉ tay "Ở ĐÓ!"', True),
+             ('cui_chao', 2.0, ngo_cui_chao, 'Cúi chào "Dạ thưa sếp"', True),
+             ('dong_thung', 2.6, ngo_dong_thung, 'Bị "đóng thùng"', False)]
+make_clips(arm, 'nhan_vien_ngo', [(c[0], c[1], c[2]) for c in NGO_CLIPS],
+           loc_bones=('goc', 'thung'), scales={'thung': 0.0, 'than': 1.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0})
+metas['nhan_vien_ngo']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in NGO_CLIPS]
 
 # ---------------------------------------------------------------- xuất .glb
 for o, meta in MODELS:
     bpy.ops.object.select_all(action='DESELECT')
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
+    rig = RIGS.get(o.name)
+    if rig:
+        rig.select_set(True)
+        bpy.context.view_layer.objects.active = rig
+        for a in ACTIONS[o.name]:
+            tr = rig.animation_data.nla_tracks.new()
+            tr.name = a['clip']
+            tr.strips.new(a['clip'], 1, a)
     bpy.ops.export_scene.gltf(
         filepath=os.path.join(OUT_GLB, meta['file']),
-        export_format='GLB', use_selection=True, export_apply=True, export_yup=True,
+        export_format='GLB', use_selection=True, export_apply=not rig, export_yup=True,
+        **(dict(export_animations=True, export_animation_mode='NLA_TRACKS', export_skins=True) if rig else {}),
     )
+    if rig:
+        for tr in list(rig.animation_data.nla_tracks):
+            rig.animation_data.nla_tracks.remove(tr)
     meta['kb'] = round(os.path.getsize(os.path.join(OUT_GLB, meta['file'])) / 1024, 1)
     print(f"XUAT {meta['file']:22s} {meta['tris']:5d} tam giác  {meta['kb']} KB")
 
@@ -523,20 +1150,63 @@ if RENDER:
         frame(cam, [o])
         render_to(os.path.join(OUT_PREV, meta['file'].replace('.glb', '.png')))
 
+    # Bảng khung hình chuyển động: mỗi hàng một đoạn, 5 khung, nhìn nghiêng 3/4
+    import numpy as np
+    TW = 300
+    os.makedirs(os.path.join(OUT_PREV, 'anim'), exist_ok=True)
+    scene.render.resolution_x = scene.render.resolution_y = TW
+    for mname, rig in RIGS.items():
+        o = objs[mname]
+        for x in allm:
+            x.hide_render = x is not o
+        frame(cam, [o], direction=(1.5, -1.0, 0.35), pad=0.95)
+        grid_paths = []
+        for act in ACTIONS[mname]:
+            rig.animation_data.action = act
+            n = round((act.frame_range[1] - act.frame_range[0]))
+            row = []
+            for k in range(5):
+                fr = 1 + round(n * k / 5) if k < 4 else 1 + round(n * 0.92)
+                scene.frame_set(fr)
+                pth = os.path.join(OUT_PREV, 'anim', f'{mname}_{act["clip"]}_{k}.png')
+                render_to(pth)
+                row.append(pth)
+            grid_paths.append(row)
+        rig.animation_data.action = None
+        scene.frame_set(1)
+        reset_pose(rig)
+        rows, cols = len(grid_paths), 5
+        big = np.zeros((rows * TW, cols * TW, 4), np.float32)
+        for ri, row in enumerate(grid_paths):
+            for ci, pth in enumerate(row):
+                im = bpy.data.images.load(pth)
+                a = np.empty(TW * TW * 4, np.float32)
+                im.pixels.foreach_get(a)
+                y0 = (rows - 1 - ri) * TW
+                big[y0:y0 + TW, ci * TW:(ci + 1) * TW] = a.reshape(TW, TW, 4)
+                bpy.data.images.remove(im)
+        img = bpy.data.images.new('khung_' + mname, cols * TW, rows * TW)
+        img.pixels.foreach_set(big.ravel())
+        img.filepath_raw = os.path.join(OUT_PREV, f'chuyen_dong_{mname}.png')
+        img.file_format = 'PNG'
+        img.save()
+        print('ANH', img.filepath_raw)
+    scene.render.resolution_x = scene.render.resolution_y = 640
+
     # Ảnh tổng quan: xếp tất cả cạnh nhau theo tỉ lệ thật
     for x in allm:
         x.hide_render = False
     get = {meta['file'][:-4]: o for o, meta in MODELS}
     place = {
         'tu_mat': (-3.4, 0.4, 0), 'ke_hang': (-1.9, 0.3, 0), 'nguoi_kiem_ke': (-0.55, -0.3, 0),
-        'nhan_vien': (0.35, -0.5, 0), 'quay_thu_ngan': (2.6, 0.5, 0), 'thung_carton': (1.2, -0.9, 0),
+        'nhan_vien': (0.2, -0.5, 0), 'nhan_vien_ngo': (0.85, -0.45, 0),'quay_thu_ngan': (2.6, 0.5, 0), 'thung_carton': (1.2, -0.9, 0),
         'xe_day': (-1.2, -1.2, 0), 'bang_dong_lanh': (-2.7, -1.1, 0), 'may_cham_cong': (-2.0, -1.4, 0),
-        'the_nhan_vien': (0.75, -1.5, 0), 'may_quet': (0.45, -1.5, 0),
+        'the_nhan_vien': (0.75, -1.5, 0), 'may_quet': (0.45, -1.5, 0), 'den_pin': (0.25, -1.6, 0),
     }
     for k, loc in place.items():
-        get[k].location = loc
+        RIGS.get(k, get[k]).location = loc
     get['thung_carton'].rotation_euler = (0, 0, 0.3)
-    get['nguoi_kiem_ke'].rotation_euler = (0, 0, -0.35)
+    RIGS['nguoi_kiem_ke'].rotation_euler = (0, 0, -0.35)
     get['xe_day'].rotation_euler = (0, 0, 0.5)
     # bày hàng lên kệ và tủ mát (chỉ để xem, không xuất)
     goods = [get[k] for k in ('hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua')]

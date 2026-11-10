@@ -21,6 +21,8 @@ export interface ShiftStats {
   idleSec: number;
   runSec: number;
   seen: number;
+  lightSpotted: number;
+  drops: number;
 }
 
 export function clockOf(minutes: number): string {
@@ -43,7 +45,7 @@ export class Shift {
   restockTotal: number;
   freezerDone = new Set<number>();
   pile: number;
-  stats: ShiftStats = { heard: 0, cans: 0, idleSec: 0, runSec: 0, seen: 0 };
+  stats: ShiftStats = { heard: 0, cans: 0, idleSec: 0, runSec: 0, seen: 0, lightSpotted: 0, drops: 0 };
 
   constructor(night: number, rng: () => number) {
     this.night = night;

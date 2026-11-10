@@ -39,7 +39,7 @@ export const SHELF_X0 = 4;
 export const SHELF_X1 = 17;
 export const SHELF_MID = (SHELF_X0 + SHELF_X1) / 2;
 export const SHELF_DEPTH = 1.0;
-export const SHELF_HEIGHT = 2.0;
+export const SHELF_HEIGHT = 2.4; // cao hơn mắt (1,6) và đầu kiểm kê viên (2,05): che hẳn tia quét
 
 export interface ShelfRow { id: number; zc: number; box: AABB }
 export const SHELVES: ShelfRow[] = [9.5, 12.75, 16, 19.25].map((zc, i) => ({

@@ -1,39 +1,182 @@
 [
   {
     "file": "ke_hang.glb",
-    "ten": "Kệ hàng (module 1,3 m)",
-    "mo_ta": "Gondola 2 mặt, 4 tầng mỗi mặt, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).",
-    "tris": 540,
+    "ten": "Kệ hàng (module 1,3 m, cao 2,4 m)",
+    "mo_ta": "Gondola 2 mặt, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).",
+    "tris": 660,
     "kich_thuoc_m": [
       1.3,
-      2.22,
+      2.62,
       0.952
     ],
-    "kb": 41.8
+    "kb": 50.0
   },
   {
     "file": "nguoi_kiem_ke.glb",
     "ten": "Người Kiểm Kê",
     "mo_ta": "Cao 2,05 m, gầy, đầu không mặt luôn cúi, tay trái dài quá hông, tay phải cầm máy quét ở độ cao 1,25 m (khớp SCANNER_Y). Thẻ tên để trống.",
-    "tris": 452,
+    "tris": 572,
     "kich_thuoc_m": [
       0.649,
       2.11,
       0.713
     ],
-    "kb": 36.7
+    "chuyen_dong": [
+      {
+        "ten": "di",
+        "nhan": "Đi tuần (chậm, đều)",
+        "lap": true
+      },
+      {
+        "ten": "chay",
+        "nhan": "Chạy (khi mất điện, nghe tiếng động)",
+        "lap": true
+      },
+      {
+        "ten": "dung_im",
+        "nhan": "Đứng im",
+        "lap": true
+      },
+      {
+        "ten": "quet",
+        "nhan": "Quét qua lại",
+        "lap": true
+      },
+      {
+        "ten": "quay_dau",
+        "nhan": "Quay đầu giật (nghe tiếng động)",
+        "lap": true
+      },
+      {
+        "ten": "dem",
+        "nhan": "Đếm \"Một… Hai…\"",
+        "lap": true
+      }
+    ],
+    "kb": 158.1
   },
   {
     "file": "nhan_vien.glb",
     "ten": "Nhân viên ca đêm",
     "mo_ta": "Cao 1,72 m, gilê đỏ đồng phục, thẻ nhân viên trước ngực. Đổi màu gilê/tóc trong game để phân biệt 4 người chơi.",
-    "tris": 368,
+    "tris": 640,
     "kich_thuoc_m": [
       0.63,
       1.8,
       0.3
     ],
-    "kb": 32.4
+    "chuyen_dong": [
+      {
+        "ten": "dung",
+        "nhan": "Đứng thở",
+        "lap": true
+      },
+      {
+        "ten": "di",
+        "nhan": "Đi",
+        "lap": true
+      },
+      {
+        "ten": "chay",
+        "nhan": "Chạy",
+        "lap": true
+      },
+      {
+        "ten": "be_thung",
+        "nhan": "Bê thùng đi",
+        "lap": true
+      },
+      {
+        "ten": "quet_hang",
+        "nhan": "Quét hàng (1 tay)",
+        "lap": true
+      },
+      {
+        "ten": "di_den_pin",
+        "nhan": "Đi soi đèn pin (mất điện)",
+        "lap": true
+      },
+      {
+        "ten": "dung_den_pin",
+        "nhan": "Đứng soi đèn pin",
+        "lap": true
+      },
+      {
+        "ten": "dong_thung",
+        "nhan": "Bị \"đóng thùng\"",
+        "lap": false
+      }
+    ],
+    "kb": 215.5
+  },
+  {
+    "file": "nhan_vien_ngo.glb",
+    "ten": "Nhân viên (bản ngố)",
+    "mo_ta": "Cao 1,61 m, đầu và tay to, mắt chấm, gilê rộng, thẻ đeo cổ to đung đưa. Có sẵn thùng carton ẩn để diễn cảnh \"đóng thùng\".",
+    "tris": 1040,
+    "kich_thuoc_m": [
+      0.8,
+      1.615,
+      0.961
+    ],
+    "chuyen_dong": [
+      {
+        "ten": "dung",
+        "nhan": "Đứng (đung đưa)",
+        "lap": true
+      },
+      {
+        "ten": "di",
+        "nhan": "Đi lạch bạch",
+        "lap": true
+      },
+      {
+        "ten": "chay",
+        "nhan": "Chạy giơ tay la hét",
+        "lap": true
+      },
+      {
+        "ten": "be_thung",
+        "nhan": "Bê thùng đi",
+        "lap": true
+      },
+      {
+        "ten": "quet_hang",
+        "nhan": "Quét hàng (1 tay)",
+        "lap": true
+      },
+      {
+        "ten": "di_den_pin",
+        "nhan": "Đi soi đèn pin (mất điện)",
+        "lap": true
+      },
+      {
+        "ten": "dung_den_pin",
+        "nhan": "Đứng soi đèn pin",
+        "lap": true
+      },
+      {
+        "ten": "vay_tay",
+        "nhan": "Vẫy tay",
+        "lap": true
+      },
+      {
+        "ten": "chi_tay",
+        "nhan": "Chỉ tay \"Ở ĐÓ!\"",
+        "lap": true
+      },
+      {
+        "ten": "cui_chao",
+        "nhan": "Cúi chào \"Dạ thưa sếp\"",
+        "lap": true
+      },
+      {
+        "ten": "dong_thung",
+        "nhan": "Bị \"đóng thùng\"",
+        "lap": false
+      }
+    ],
+    "kb": 320.2
   },
   {
     "file": "thung_carton.glb",
@@ -118,6 +261,18 @@
       0.195
     ],
     "kb": 13.7
+  },
+  {
+    "file": "den_pin.glb",
+    "ten": "Đèn pin",
+    "mo_ta": "Dài 18 cm. Mỗi người một cái, dùng khi siêu thị mất điện.",
+    "tris": 120,
+    "kich_thuoc_m": [
+      0.068,
+      0.072,
+      0.206
+    ],
+    "kb": 10.5
   },
   {
     "file": "xe_day.glb",

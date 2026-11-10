@@ -11,6 +11,7 @@ import { AuditorView } from './render/auditorView.ts';
 import { PlayerController } from './client/player.ts';
 import { GameAudio } from './client/audio.ts';
 import { Hud } from './client/hud.ts';
+import { MouseLook } from './client/mouseLook.ts';
 
 type Mode = 'menu' | 'play' | 'eval' | 'dying' | 'spectate' | 'final';
 
@@ -20,10 +21,14 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 document.getElementById('app')!.appendChild(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.05, 60);
 const controls = new PointerLockControls(camera, document.body);
+controls.pointerSpeed = 0; // tắt phần xoay mặc định (hay giật); dùng MouseLook
+const look = new MouseLook(camera, document.body);
 const player = new PlayerController(camera);
 const audio = new GameAudio();
 const hud = new Hud();
@@ -40,6 +45,9 @@ let scanT = 0;
 let scanBeepT = 0;
 let canCooldown = 0;
 let specIdx = 0;
+let powerTarget = 1;
+let flickerT = 0;
+let flashTipShown = false;
 let dyingName = '';
 
 const SPEC_CAMS: { pos: [number, number, number]; look: [number, number, number]; name: string }[] = [
@@ -67,15 +75,26 @@ document.getElementById('start')!.addEventListener('click', () => {
   hud.show('hud', true);
   hud.badge(name, 0);
   mode = 'play';
-  controls.lock();
+  look.lock();
 });
 
-document.getElementById('pause')!.addEventListener('click', () => {
-  if (mode === 'play') controls.lock();
+document.getElementById('pause')!.addEventListener('click', (e) => {
+  if ((e.target as HTMLElement).closest('.sens')) return;
+  if (mode === 'play') look.lock();
 });
 controls.addEventListener('lock', () => hud.show('pause', false));
 controls.addEventListener('unlock', () => {
   if (mode === 'play') hud.show('pause', true);
+});
+
+// ---- Độ nhạy chuột (ở màn tạm dừng) ----
+const sensInput = document.getElementById('sens') as HTMLInputElement;
+const sensOut = document.getElementById('sens-val')!;
+sensInput.value = String(look.sensitivity);
+sensOut.textContent = look.sensitivity.toFixed(2);
+sensInput.addEventListener('input', () => {
+  look.setSensitivity(Number(sensInput.value));
+  sensOut.textContent = look.sensitivity.toFixed(2);
 });
 
 // ---- Phím ----
@@ -105,7 +124,31 @@ window.addEventListener('keydown', (e) => {
   if (mode !== 'play' || !controls.isLocked || !game || !world || e.repeat) return;
   if (e.code === 'KeyE') interact();
   if (e.code === 'KeyQ') throwCan();
+  if (e.code === 'KeyT') toggleFlash();
+  if (e.code === 'KeyG') dropBox();
+  if (e.code === 'F6' && debug) {
+    e.preventDefault();
+    game.forceBlackout();
+  }
 });
+
+function toggleFlash(): void {
+  if (!game) return;
+  player.setFlashlight(!player.flashOn);
+  game.player.light = player.flashOn;
+  audio.click(p3(player.pos, 1.3), 0.25, 3200);
+}
+
+function dropBox(): void {
+  if (!game || !world || !player.carrying) return;
+  player.setCarrying(false);
+  game.dropBox();
+  world.setPileCount(game.shift.pile);
+  game.noise({ ...player.pos }, 8, 1.5);
+  audio.click(p3(player.pos, 0.2), 0.9, 900);
+  audio.clank(p3(player.pos, 0.2));
+  hud.toast('Thả rơi thùng hàng (rất ồn). Hàng bị trả về kho.', false);
+}
 
 // ---- Tương tác ----
 const raycaster = new THREE.Raycaster();
@@ -187,11 +230,12 @@ function throwCan(): void {
 
 function updateScan(dt: number, f: Focus): void {
   if (!game) return;
-  const holding = player.keys.has('KeyF') && !player.carrying && f?.kind === 'shelf';
+  const needsStock = f?.kind === 'shelf' && game.shift.restockNeeded.has(f.section.id);
+  const holding = player.keys.has('KeyF') && !player.carrying && f?.kind === 'shelf' && !needsStock;
   if (!holding || f?.kind !== 'shelf') {
     scanT = 0;
     scanTarget = null;
-    hud.scanner(f?.kind === 'shelf' && !player.carrying ? f.section.name : null, 0, f?.kind === 'shelf' && game.shift.scanned.has(f.section.id));
+    hud.scanner(f?.kind === 'shelf' && !player.carrying && !needsStock ? f.section.name : null, 0, f?.kind === 'shelf' && game.shift.scanned.has(f.section.id));
     return;
   }
   const id = f.section.id;
@@ -232,7 +276,10 @@ function hintFor(f: Focus): string {
   if (f?.kind === 'pile') return `[E] Lấy thùng hàng (còn ${game.shift.pile})`;
   if (f?.kind === 'freezer')
     return game.shift.freezerWindow() !== null ? '[E] Ghi nhiệt độ tủ đông' : 'Chưa đến giờ ghi nhiệt độ';
-  if (f?.kind === 'shelf') return game.shift.scanned.has(f.section.id) ? '' : '[Giữ F] Quét kệ';
+  if (f?.kind === 'shelf') {
+    if (game.shift.restockNeeded.has(f.section.id)) return 'Kệ đang THIẾU HÀNG · lấy thùng ở kho xếp vào trước rồi mới quét';
+    return game.shift.scanned.has(f.section.id) ? '' : '[Giữ F] Quét kệ';
+  }
   return '';
 }
 
@@ -245,6 +292,21 @@ function handleEvents(): void {
         hud.announce(e.text);
         audio.speak(e.text);
         break;
+      case 'power':
+        powerTarget = e.on ? 1 : 0;
+        flickerT = e.on ? 0.8 : 1.4;
+        if (!e.on) {
+          audio.tone(55, 1.8, 0.3);
+          audio.click(p3(player.pos, 3), 0.8, 400);
+          if (!flashTipShown) {
+            flashTipShown = true;
+            hud.toast('MẤT ĐIỆN · [T] bật/tắt đèn pin. Ánh đèn rọi tới có thể khiến kiểm kê viên chạy tới.', false);
+          }
+        } else {
+          audio.tone(120, 0.5, 0.12);
+        }
+        break;
+      case 'light':
       case 'heard':
         audio.tone(1760, 0.05, 0.1, p3(game.auditor.pos, 1.3), 'square');
         setTimeout(() => game && audio.tone(1760, 0.05, 0.1, p3(game.auditor.pos, 1.3), 'square'), 120);
@@ -299,11 +361,13 @@ function onEval(ev: Evaluation): void {
       return;
     }
     game.nextNight();
+    powerTarget = 1;
+    flickerT = 0;
     world.resetNight(game.shift.restockNeeded, game.shift.pile, game.night);
     player.teleport(PLAYER_SPAWN);
     player.setCarrying(false);
     mode = 'play';
-    controls.lock();
+    look.lock();
   });
 }
 
@@ -316,6 +380,8 @@ function startDeath(reason: 'scan' | 'holes'): void {
   hud.sheet(game, false);
   sheetOpen = false;
   player.setCarrying(false);
+  player.setFlashlight(false);
+  game.player.light = false;
   controls.unlock();
   hud.show('pause', false);
   audio.cancelSpeech();
@@ -377,7 +443,10 @@ function frame(now: number): void {
       game.reportMotion(dt, m.moving, m.running);
       const f = getFocus();
       updateScan(dt, f);
-      hud.hint(hintFor(f));
+      let hint = hintFor(f);
+      if (!hint && !game.power) hint = `[T] ${player.flashOn ? 'Tắt' : 'Bật'} đèn pin`;
+      if (player.carrying) hint += ' · [G] thả thùng để chạy';
+      hud.hint(hint);
       canCooldown = Math.max(0, canCooldown - dt);
       game.tick(dt);
       hud.clock(game);
@@ -390,11 +459,19 @@ function frame(now: number): void {
       game.tick(dt);
     }
     handleEvents();
+    if (flickerT > 0) {
+      flickerT -= dt;
+      const lvl = Math.random() < 0.55 ? powerTarget : 1 - powerTarget;
+      world.setPower(flickerT > 0 ? lvl * (0.35 + 0.65 * Math.random()) : powerTarget);
+    } else {
+      world.setPower(powerTarget);
+    }
     auditorView.update(game.auditor, dt, debug);
     if (debug) {
       const a = game.auditor;
       hud.debug(
-        `Kiểm kê viên: ${a.state}\nVị trí: ${a.pos.x.toFixed(1)}, ${a.pos.z.toFixed(1)}\n` +
+        `Kiểm kê viên: ${a.state}${a.running ? ' (CHẠY)' : ''} · Điện: ${game.power ? 'có' : 'MẤT'} · Đèn pin: ${player.flashOn ? 'bật' : 'tắt'}\n` +
+          `[F6] bật/tắt mất điện để thử\nVị trí: ${a.pos.x.toFixed(1)}, ${a.pos.z.toFixed(1)}\n` +
           `Điểm nghi ngờ: ${a.suspicion ? `${a.suspicion.x.toFixed(1)}, ${a.suspicion.z.toFixed(1)}` : '—'}\n` +
           `Đếm: ${Math.round(a.countProgress * 100)}%\nNgười chơi: ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(1)}\n` +
           `Giọng tiếng Việt: ${audio.hasVietnameseVoice ? 'có' : 'không có (chỉ hiện chữ)'}`,

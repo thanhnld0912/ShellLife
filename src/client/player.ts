@@ -11,6 +11,8 @@ const RADIUS = 0.3;
 export class PlayerController {
   pos: V2 = { x: 0, z: 0 };
   carrying = false;
+  flashOn = false;
+  readonly flash: THREE.SpotLight;
   keys = new Set<string>();
   /** Gọi khi người chơi gây tiếng động: (vị trí, bán kính nghe, sai số). */
   onNoise: (at: V2, radius: number, error: number) => void = () => {};
@@ -30,6 +32,16 @@ export class PlayerController {
     this.box.position.set(0, -0.42, -0.6);
     this.box.visible = false;
     camera.add(this.box);
+    // Đèn pin cầm tay phải, hơi chúc xuống
+    this.flash = new THREE.SpotLight(0xfff1d6, 0, 22, 0.42, 0.55, 1.3);
+    this.flash.position.set(0.2, -0.22, -0.1);
+    this.flash.target.position.set(0.05, -0.45, -4);
+    this.flash.castShadow = true;
+    this.flash.shadow.mapSize.set(512, 512);
+    this.flash.shadow.camera.near = 0.2;
+    this.flash.shadow.camera.far = 22;
+    this.flash.shadow.bias = -0.002;
+    camera.add(this.flash, this.flash.target);
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -39,6 +51,11 @@ export class PlayerController {
     this.pos = { ...p };
     this.camera.position.set(p.x, EYE, p.z);
     this.camera.rotation.set(0, yaw, 0, 'YXZ');
+  }
+
+  setFlashlight(on: boolean): void {
+    this.flashOn = on;
+    this.flash.intensity = on ? 30 : 0;
   }
 
   setCarrying(v: boolean): void {
@@ -63,7 +80,8 @@ export class PlayerController {
     const len = Math.hypot(mx, mz);
     const moving = len > 0.01;
     const running = moving && (k.has('ShiftLeft') || k.has('ShiftRight'));
-    const speed = this.carrying ? (running ? 2.6 : 1.6) : running ? 3.8 : 2.2;
+    // Ôm thùng nặng: chậm hơn một chút. Chạy khi ôm thùng (2,7) thua kiểm kê viên chạy (3,4+) → muốn thoát phải thả thùng.
+    const speed = this.carrying ? (running ? 2.7 : 1.8) : running ? 3.8 : 2.2;
 
     if (moving) {
       mx /= len;

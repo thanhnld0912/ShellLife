@@ -1,6 +1,7 @@
 // Kiểm tra nhanh logic game, không cần trình duyệt: npm run sim:test
 import { Game } from '../src/sim/game.ts';
-import { ROUTE, pathClear, planPath, hasLOS } from '../src/sim/auditor.ts';
+import { Auditor, ROUTE, beamReach, pathClear, planPath, hasLOS, tuningForNight } from '../src/sim/auditor.ts';
+import { mulberry32 } from '../src/sim/rng.ts';
 import { AUDITOR_DOOR, AUDITOR_SPAWN, SECTIONS } from '../src/sim/layout.ts';
 import { dist } from '../src/sim/geometry.ts';
 
@@ -27,6 +28,11 @@ for (const t of targets) {
 // 3. Kệ che tầm nhìn
 check('Kệ che tầm nhìn giữa hai làn', !hasLOS({ x: 10, z: 11.1 }, { x: 10, z: 14.4 }));
 check('Cùng làn thì nhìn thấy', hasLOS({ x: 3, z: 11.1 }, { x: 15, z: 11.1 }));
+{
+  const r = beamReach({ x: 10, z: 11.1 }, Math.PI, 9); // chĩa về phía bắc, dãy kệ 1 ở z 9..10
+  check('Tia quét dừng ở mặt kệ', Math.abs(r - 1.1) < 0.05, r.toFixed(2));
+  check('Tia quét dọc làn đi hết tầm', beamReach({ x: 3, z: 11.1 }, Math.PI / 2, 9) === 9);
+}
 
 // 4. Một ca: Người Kiểm Kê xuất hiện, đi tuần, không ai ở trong tầm thì không bị bắt
 {
@@ -88,9 +94,14 @@ check('Cùng làn thì nhìn thấy', hasLOS({ x: 3, z: 11.1 }, { x: 15, z: 11.1
   g.shift.minutes = 420;
   g.freezer();
   check('Việc an toàn bị giới hạn ở nửa chỉ tiêu', g.shift.cong === g.shift.safeCap, `${g.shift.cong}/${g.shift.quota}`);
-  g.scanSection(SECTIONS[0].id);
-  g.scanSection(SECTIONS[0].id);
+  const full = SECTIONS.find((s) => !g.shift.restockNeeded.has(s.id))!;
+  const empty = SECTIONS.find((s) => g.shift.restockNeeded.has(s.id))!;
+  check('Kệ thiếu hàng thì không quét được', !g.scanSection(empty.id).ok);
+  g.scanSection(full.id);
+  g.scanSection(full.id);
   check('Không quét một kệ hai lần', g.shift.cong === g.shift.safeCap + 2, String(g.shift.cong));
+  g.restock(empty.id);
+  check('Xếp hàng xong thì quét được', g.scanSection(empty.id).ok);
 }
 
 // 8. Hết ca: thiếu chỉ tiêu và vắng điểm danh thì bị 2 lỗ
@@ -102,6 +113,53 @@ check('Cùng làn thì nhìn thấy', hasLOS({ x: 3, z: 11.1 }, { x: 15, z: 11.1
   const ev = g.events.find((e) => e.type === 'eval');
   check('Hết ca thì có phiếu đánh giá', !!ev);
   if (ev && ev.type === 'eval') check('Thiếu chỉ tiêu + vắng điểm danh = 2 lỗ', ev.ev.holesAdded === 2, String(ev.ev.holesAdded));
+}
+
+// 6. Mất điện: nghe tiếng động thì CHẠY tới; ánh đèn pin trong tầm mắt làm nó chú ý
+{
+  const g = new Game('Thử', 7);
+  g.player.pos = { x: 22.5, z: 23.4 };
+  check('Đêm 1 không mất điện', g.blackout === null);
+  for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
+  g.events.length = 0;
+  g.forceBlackout();
+  g.tick(1 / 60);
+  check('Mất điện phát sự kiện power', g.events.some((e) => e.type === 'power' && !e.on));
+  check('Kiểm kê viên biết đang mất điện', g.auditor.blackout && !g.power);
+  g.noise({ x: g.auditor.pos.x + 5, z: g.auditor.pos.z }, 10, 0.5);
+  let ran = false;
+  let maxStep = 0;
+  for (let i = 0; i < 60 * 3; i++) {
+    const p0 = { ...g.auditor.pos };
+    g.tick(1 / 60);
+    if (g.auditor.running) ran = true;
+    maxStep = Math.max(maxStep, dist(p0, g.auditor.pos) * 60);
+  }
+  check('Khi mất điện, nghe tiếng động thì chạy', ran, `tốc độ tối đa ${maxStep.toFixed(2)} m/s`);
+  check('Tốc độ chạy > đi điều tra', maxStep > g.auditor.tune.investigateSpeed + 0.5, maxStep.toFixed(2));
+  g.forceBlackout();
+  g.tick(1 / 60);
+  check('Có điện lại', g.power && !g.auditor.blackout);
+
+  const mk = () => {
+    const a = new Auditor(tuningForNight(2), mulberry32(3));
+    a.state = 'search';
+    a.pos = { x: 3, z: 11.1 };
+    a.heading = Math.PI / 2 - 1.0; // người chơi lệch 1 rad: ngoài tia quét, trong tầm mắt
+    a.blackout = true;
+    return a;
+  };
+  const target = { x: 10, z: 11.1 };
+  const lit = mk();
+  lit.update(1 / 60, target, true, true);
+  check('Thấy ánh đèn pin thì chú ý', lit.state === 'alert' && lit.events.some((e) => e.type === 'light'), lit.state);
+  const dark = mk();
+  dark.update(1 / 60, target, true, false);
+  check('Tắt đèn pin thì không bị chú ý', dark.state === 'search', dark.state);
+  const day = mk();
+  day.blackout = false;
+  day.update(1 / 60, target, true, true);
+  check('Có điện thì đèn pin không gây chú ý', day.state === 'search', day.state);
 }
 
 console.log(failed ? `\n${failed} kiểm tra thất bại.` : '\nTất cả kiểm tra đều đạt.');

@@ -174,6 +174,10 @@ const PHASES = [
       ['p1j','Chỉnh tốc độ, tầm quét, âm thanh theo nhận xét','chung',0],
       ['p1k','Thay âm thanh tạm bằng âm thanh thật (đèn, bíp, tiếng đếm)','chung',0],
       ['p1l','Đi theo dấu vết công việc (đưa sớm từ giai đoạn 4 nếu cần thêm áp lực)','ai',0],
+      ['p1m','Sự kiện mất điện (từ đêm 2): đèn chập chờn rồi tắt, đèn lối thoát xanh, đèn pin [T]','ai',1],
+      ['p1n','Khi mất điện: Người Kiểm Kê CHẠY tới khi nghe tiếng động hoặc thấy ánh đèn pin rọi tới','ai',1],
+      ['p1o','Ôm thùng chậm hơn (chạy thua Người Kiểm Kê), thả thùng [G] để chạy thoát','ai',1],
+      ['p1p','Chơi thử sự kiện mất điện, chỉnh độ tối, tốc độ chạy, tầm thấy đèn pin','chung',0],
     ]},
   { id:'p2', name:'Giai đoạn 2 · Chơi mạng 2 người, voice trong game', time:'~3–4 tuần',
     q:'Chơi với một người bạn: có thì thầm với nhau không? Có ai la lên rồi cả hai cùng cười không?',
@@ -218,12 +222,12 @@ const PHASES = [
     ]},
 ];
 const BLENDER = [
-  ['b1','Bộ module: sàn, tường, cột, trần'],['b2','Kệ hàng (1 module, lặp lại)'],
+  ['b1','Bộ module: sàn, tường, cột, trần'],['b2','Kệ hàng (1 module, lặp lại)',1],
   ['b3','6 dạng hàng: hộp, lon, chai, gói, khay, túi'],['b4','Quầy, máy in hóa đơn, màn hình camera'],
   ['b5','Tủ mát, cửa kính mặt tiền, cửa cuốn'],['b6','Kho, kho lạnh, thùng các-tông'],
   ['b7','Phòng điện, tủ điện'],['b8','Phòng nghỉ, bảng phân ca'],
-  ['b9','Cầu thang sắt, văn phòng tầng lửng'],['b10','Nhân vật nhân viên (dùng cho người chơi và Người Kiểm Kê), gắn xương bằng Mixamo'],
-  ['b11','Xe đẩy hàng'],
+  ['b9','Cầu thang sắt, văn phòng tầng lửng'],['b10','Nhân vật: nhân viên (bản thường + bản ngố) và Người Kiểm Kê, có xương và chuyển động (script Blender). Chờ chốt bản nhân viên'],
+  ['b11','Xe đẩy hàng',1],['b12','Đèn pin, máy quét cầm tay, thẻ nhân viên, máy chấm công',1],
 ];
 const WHO = { ai:'Claude', ban:'Bạn', chung:'Cả hai' };
 const KEY = 'hopdong30-plan';
@@ -257,7 +261,7 @@ PHASES.forEach((p, i) => {
   root.appendChild(d);
 });
 const bl = document.getElementById('blender-list');
-BLENDER.forEach(([id, text]) => bl.appendChild(taskLi(id, text, null, 0)));
+BLENDER.forEach(([id, text, def]) => bl.appendChild(taskLi(id, text, null, def || 0)));
 for (const id of ['log', 'later']) {
   const ta = document.getElementById(id);
   ta.value = state[id] || '';
