@@ -81,12 +81,62 @@ label { font: 600 .74rem var(--mono); text-transform: uppercase; color: var(--di
 #debug { position: absolute; left: 16px; bottom: 16px; margin: 0; font: .75rem/1.5 var(--mono); color: #9fe3c8; background: rgba(0,0,0,.6); padding: .5rem .7rem; border-radius: 4px; }
 
 /* ---- Chết ---- */
-#death { position: fixed; inset: 0; z-index: 30; }
+#death { position: fixed; inset: 0; z-index: 30; pointer-events: none; }
 #death > div { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 16px; }
-#death[data-stage="red"] .red { display: flex; background: radial-gradient(ellipse at center, rgba(229,83,75,.35), rgba(10,0,0,.85)); color: #fff; font: 700 1.2rem var(--mono); }
+/* Viền đỏ, giữa trong suốt: vẫn thấy Người Kiểm Kê lao tới */
+#death[data-stage="red"] .red { display: flex; justify-content: flex-end; padding-bottom: 14vh; background: radial-gradient(ellipse at center, transparent 30%, rgba(150,10,5,.55) 70%, rgba(20,0,0,.9)); color: #fff; font: 700 1.2rem var(--mono); text-shadow: 0 2px 8px #000; animation: deathPulse .5s ease-in-out infinite alternate; }
+@keyframes deathPulse { from { opacity: .75; } to { opacity: 1; } }
+/* Khung phim: hai dải đen trên dưới + phụ đề */
+#death[data-stage="cine"] .cine { display: flex; justify-content: flex-end; padding: 0 16px 3.2vh; border-top: 11vh solid #000; border-bottom: 11vh solid #000; color: var(--fluoro); font: 600 1.05rem var(--mono); text-shadow: 0 2px 6px #000; }
+#death[data-stage="cine"] .cine p { margin: 0; position: relative; top: 11vh; transform: translateY(-50%); }
 #death[data-stage="black"] .black { display: flex; background: #030405; color: #6c7a76; font: 600 1rem var(--mono); }
 #death .slit { width: min(18rem, 60vw); height: 8px; background: linear-gradient(90deg, transparent, rgba(216,243,236,.55), transparent); filter: blur(2px); margin-bottom: 2.5rem; }
 
 /* ---- Chế độ xem ---- */
 #spectate { position: fixed; left: 0; right: 0; top: 0; z-index: 15; display: flex; justify-content: space-between; gap: 1rem; padding: 12px 16px; font: 700 .85rem var(--mono); color: var(--fluoro); background: linear-gradient(rgba(0,0,0,.7), transparent); pointer-events: none; }
 #spectate .help { color: var(--dim); font-weight: 600; }
+
+/* ---- Bảng sự kiện (phím P) ---- */
+#dev { position: fixed; top: 0; right: 0; bottom: 0; width: min(26rem, 100vw); z-index: 40; background: rgba(13,17,18,.96); border-left: 1px solid var(--line); overflow-y: auto; overflow-x: hidden; font-size: .85rem; }
+#dev .dev-in { padding: 14px 16px 24px; display: flex; flex-direction: column; gap: .7rem; }
+#dev header { display: flex; justify-content: space-between; align-items: flex-start; }
+#dev header b { display: block; font: 700 .95rem var(--mono); color: var(--tag); letter-spacing: .08em; }
+#dev header small { color: var(--dim); }
+#dev .state { display: flex; flex-wrap: wrap; gap: .3rem .9rem; font: .76rem var(--mono); color: var(--fluoro); background: #0a0e0f; border: 1px solid var(--line); border-radius: 4px; padding: .45rem .6rem; }
+#dev .bad { color: var(--alarm); }
+#dev section { border-top: 1px solid var(--line); padding-top: .6rem; display: flex; flex-direction: column; gap: .45rem; }
+#dev h3 { margin: 0; font: 700 .72rem var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--fluoro); display: flex; align-items: center; gap: .5rem; }
+#dev h3 small { color: var(--dim); font-weight: 600; letter-spacing: 0; text-transform: none; }
+#dev button { font: 600 .8rem var(--sans); padding: .42rem .65rem; background: #233032; color: var(--text); border: 1px solid #34444a; }
+#dev button:hover:not(:disabled) { background: #2d3d40; filter: none; }
+#dev button:disabled { opacity: .4; cursor: default; }
+#dev button.on { background: var(--tag); color: var(--night); border-color: var(--tag); }
+#dev button.ghost { background: transparent; color: var(--dim); }
+#dev button.x { padding: .2rem .55rem; }
+#dev button.mini { padding: .1rem .45rem; font-size: .7rem; margin-left: auto; }
+#dev .btns { display: flex; flex-wrap: wrap; gap: .35rem; }
+#dev .row { display: flex; align-items: center; gap: .5rem; }
+#dev .row input:not([type]) { flex: 1; min-width: 0; font: .85rem var(--sans); padding: .4rem .55rem; background: var(--night); color: var(--fluoro); border: 1px solid var(--line); border-radius: 4px; }
+#dev .lbl { color: var(--dim); min-width: 8.5rem; }
+#dev .seg { display: flex; gap: 2px; }
+#dev .seg button { min-width: 2.3rem; }
+#dev label { font: inherit; text-transform: none; color: var(--text); }
+#dev label.ck { display: flex; gap: .45rem; align-items: center; cursor: pointer; }
+#dev label.sl { display: grid; grid-template-columns: 8.5rem minmax(4rem, 1fr) auto; align-items: center; gap: .5rem; padding-left: .45rem; border-left: 2px solid transparent; }
+#dev label.sl.ch { border-left-color: var(--tag); }
+#dev label.sl b { font: .76rem var(--mono); color: var(--fluoro); text-align: right; white-space: nowrap; }
+#dev label.sl input { width: 100%; }
+#dev .dim, #dev p { color: var(--dim); font-size: .76rem; margin: 0; }
+#dev #dev-log { font: .74rem/1.55 var(--mono); color: #9fe3c8; background: #0a0e0f; border: 1px solid var(--line); border-radius: 4px; padding: .45rem .6rem; max-height: 14rem; overflow-y: auto; }
+@media (max-width: 480px) { #dev label.sl { grid-template-columns: 1fr auto; } #dev label.sl input { grid-column: 1 / -1; grid-row: 2; } }
+
+/* ---- Phiếu việc đang mở (dưới đồng hồ) ---- */
+#orders { position: absolute; top: 92px; right: 16px; width: min(22rem, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 3px; font: .76rem/1.35 var(--mono); }
+#orders > div { display: flex; justify-content: space-between; gap: .8rem; background: rgba(241,238,230,.92); color: var(--ink); padding: .3rem .55rem; border-left: 3px solid #8a8378; }
+#orders > div span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#orders > div b { white-space: nowrap; }
+#orders > div.soon { border-left-color: var(--tag); }
+#orders > div.soon b { color: #8a5a00; }
+#orders > div.late { border-left-color: var(--stamp); color: var(--stamp); animation: orderLate 1s ease-in-out infinite alternate; }
+#orders > div.more { justify-content: flex-start; color: #6d675c; background: rgba(241,238,230,.75); }
+@keyframes orderLate { from { background: rgba(241,238,230,.92); } to { background: rgba(255,214,208,.95); } }

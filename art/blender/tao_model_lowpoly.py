@@ -68,6 +68,8 @@ C = dict(
     giay=M('giay_trang', 0xe9e4d4),
     vo_tu=M('vo_tu_mat', 0xc9d1d2, 0.5),
     kinh=M('kinh', 0x9fd8e6, 0.05, 0.0, 0.0, 0.28),
+    kinh_mo=M('kinh_mo', 0xc4e6ee, 0.2, 0.0, 0.0, 0.36),          # kính tủ lạnh hơi sương
+    trong_tu=M('trong_tu', 0xdfe8ea, 0.6, 0.0, 0.35),             # lòng tủ lạnh: trắng, tự sáng nhẹ
     den_lanh=M('den_lanh', 0xbff4ff, 0.5, 0.0, 4.0),
     den_do=M('den_do', 0xff3b30, 0.4, 0.0, 6.0),
     den_xanh=M('den_xanh', 0x5dff8a, 0.4, 0.0, 4.0),
@@ -97,6 +99,11 @@ C = dict(
     mi_do=M('mi_do', 0xb3261e, 0.6),
     sua_trang=M('sua_trang', 0xf0eee6, 0.7),
     sua_xanh=M('sua_xanh', 0x2f6db5, 0.7),
+    kem_hong=M('kem_hong', 0xe58fa8, 0.6),
+    kem_nau=M('kem_nau', 0x5a3424, 0.7),
+    dong_xanh=M('dong_xanh', 0x2f7fc1, 0.4),
+    dong_trang=M('dong_trang', 0xeef3f5, 0.4),
+    sc_vang=M('sc_vang', 0xf0c94a, 0.6),
 )
 
 # ---------------------------------------------------------------- hình khối
@@ -308,35 +315,139 @@ def thung_carton():
     return finish(P, 'thung_carton', 'Thùng carton',
                   '58×50×58 cm như thùng trong kho. Có nhãn trắng phía trước để vẽ chữ (CanvasTexture) cho thùng "ĐÃ LƯU KHO".')
 
-# 5. Tủ mát cửa kính
+# Ba loại tủ lạnh bán hàng. Lòng tủ ĐỂ TRỐNG: game tự xếp hàng (InstancedMesh) lên các tầng ghi trong
+# manifest ("tang_hang"), để khi hết hàng thì lấy hàng ra được và người chơi xếp lại.
+# Toạ độ trong "tang_hang" theo Three.js: y = độ cao mặt tầng, z = khoảng sâu đặt hàng (+z = phía trước).
+
+def tang_hang(name, layers):
+    """Ghi các tầng đặt hàng vào manifest: [{y, x0, x1, z0, z1}] (mét, toạ độ Three.js)."""
+    for o, meta in MODELS:
+        if meta['file'] == name + '.glb':
+            meta['tang_hang'] = [dict(y=round(y, 3), x0=x0, x1=x1, z0=z0, z1=z1) for (y, x0, x1, z0, z1) in layers]
+
+# 5. Tủ mát cửa kính (nước, sữa)
+TM_TANG = (0.215, 0.585, 0.955, 1.325, 1.695)   # mặt trên 5 tầng (đáy lòng tủ + 4 kệ lưới)
 def tu_mat():
     P = []
     W, D, H = 1.0, 0.8, 2.1
     V = C['vo_tu']
-    box(P, (W, D, 0.04), (0, 0, H - 0.02), V)
-    box(P, (W, 0.04, H), (0, D / 2 - 0.02, H / 2), V)
+    T = C['trong_tu']
+    box(P, (W, D, 0.06), (0, 0, H - 0.03), V)                                    # nóc
+    box(P, (W, 0.04, H), (0, D / 2 - 0.02, H / 2), V)                             # lưng
     for sx in (-1, 1):
-        box(P, (0.04, D, H), (sx * (W / 2 - 0.02), 0, H / 2), V)
-    box(P, (W, D, 0.22), (0, 0, 0.11), C['nhua_xam'])                             # đế + máy nén
-    for i in range(6):
-        box(P, (W - 0.1, 0.004, 0.02), (0, -D / 2 - 0.002, 0.04 + i * 0.03), C['nhua_den'])  # khe tản nhiệt
-    box(P, (W, 0.08, 0.16), (0, -D / 2 + 0.02, H + 0.08), C['thuong_hieu'])       # bảng đèn trên
-    box(P, (W - 0.12, 0.01, 0.06), (0, -D / 2 - 0.025, H + 0.08), C['den_lanh'])
-    for z in (0.62, 1.04, 1.46):
-        box(P, (W - 0.1, D - 0.15, 0.02), (0, 0.04, z), C['thep'])                # kệ trong
-    box(P, (W - 0.1, 0.02, 0.03), (0, D / 2 - 0.05, H - 0.08), C['den_lanh'])     # đèn trong
+        box(P, (0.04, D, H), (sx * (W / 2 - 0.02), 0, H / 2), V)                  # hông
+    box(P, (W, D, 0.2), (0, 0, 0.1), C['nhua_xam'])                               # đế + máy nén
+    for i in range(5):
+        box(P, (W - 0.12, 0.004, 0.018), (0, -D / 2 - 0.002, 0.04 + i * 0.03), C['nhua_den'])  # khe tản nhiệt
+    # Lòng tủ sáng màu: nhìn qua kính thấy rõ hàng và chỗ trống
+    box(P, (W - 0.08, 0.01, H - 0.3), (0, D / 2 - 0.045, 0.2 + (H - 0.3) / 2), T)  # vách sau
+    for sx in (-1, 1):
+        box(P, (0.01, D - 0.12, H - 0.3), (sx * (W / 2 - 0.045), 0.02, 0.2 + (H - 0.3) / 2), T)
+    box(P, (W - 0.08, D - 0.12, 0.015), (0, 0.02, TM_TANG[0] - 0.0075), T)        # đáy lòng tủ
+    for z in TM_TANG[1:]:
+        box(P, (W - 0.1, D - 0.18, 0.015), (0, 0.04, z - 0.0075), C['thep'])      # kệ lưới
+        box(P, (W - 0.1, 0.008, 0.04), (0, -D / 2 + 0.13, z + 0.008), C['tem_gia'])  # nẹp giá phía trước
+        for x in (-0.3, 0.05, 0.3):
+            box(P, (0.06, 0.004, 0.025), (x, -D / 2 + 0.125, z + 0.008), C['giay'])
+    for x in (-(W / 2 - 0.08), (W / 2 - 0.08)):                                   # đèn LED dọc hai bên
+        box(P, (0.018, 0.018, H - 0.5), (x, -D / 2 + 0.1, 0.22 + (H - 0.5) / 2), C['den_lanh'])
+    box(P, (W - 0.12, 0.03, 0.02), (0, -D / 2 + 0.12, H - 0.1), C['den_lanh'])    # đèn ngang trên
+    box(P, (W, 0.08, 0.18), (0, -D / 2 + 0.03, H + 0.09), C['thuong_hieu'])       # bảng đèn trên nóc
+    box(P, (W - 0.12, 0.01, 0.07), (0, -D / 2 - 0.015, H + 0.09), C['den_lanh'])
     for sx in (-1, 1):                                                            # 2 cánh cửa kính
         cx = sx * W / 4
         dw = W / 2 - 0.02
         y = -D / 2 + 0.02
         box(P, (dw, 0.04, 0.05), (cx, y, H - 0.06), C['thep_toi'])
-        box(P, (dw, 0.04, 0.05), (cx, y, 0.245), C['thep_toi'])
-        box(P, (0.05, 0.04, H - 0.3), (cx - sx * (dw / 2 - 0.025), y, H / 2 + 0.1), C['thep_toi'])
-        box(P, (0.05, 0.04, H - 0.3), (cx + sx * (dw / 2 - 0.025), y, H / 2 + 0.1), C['thep_toi'])
-        box(P, (dw - 0.1, 0.01, H - 0.36), (cx, y, H / 2 + 0.11), C['kinh'])
-        box(P, (0.025, 0.04, 0.4), (cx - sx * (dw / 2 - 0.08), y - 0.03, 1.2), C['nhom'])  # tay nắm
-    return finish(P, 'tu_mat', 'Tủ mát cửa kính',
-                  '1,0×2,1 m, 2 cánh kính trong suốt, đèn lạnh xanh bên trong và bảng đèn trên nóc. Đặt 15 cái dọc tường tây.')
+        box(P, (dw, 0.04, 0.05), (cx, y, 0.225), C['thep_toi'])
+        box(P, (0.045, 0.04, H - 0.3), (cx - sx * (dw / 2 - 0.0225), y, H / 2 + 0.1), C['thep_toi'])
+        box(P, (0.045, 0.04, H - 0.3), (cx + sx * (dw / 2 - 0.0225), y, H / 2 + 0.1), C['thep_toi'])
+        box(P, (dw - 0.09, 0.008, H - 0.36), (cx, y, H / 2 + 0.1), C['kinh_mo'])
+        box(P, (0.025, 0.04, 0.45), (cx - sx * (dw / 2 - 0.08), y - 0.035, 1.15), C['nhom'])  # tay nắm
+        box(P, (0.012, 0.03, 0.04), (cx - sx * (dw / 2 - 0.08), y - 0.015, 1.38), C['nhom'])
+        box(P, (0.012, 0.03, 0.04), (cx - sx * (dw / 2 - 0.08), y - 0.015, 0.92), C['nhom'])
+    o = finish(P, 'tu_mat', 'Tủ mát cửa kính',
+               '1,0×2,1 m, 2 cánh kính hơi sương, lòng tủ sáng, 5 tầng (đáy + 4 kệ lưới có nẹp giá), đèn LED dọc. '
+               'Lòng tủ để trống: game tự xếp nước, sữa vào các tầng (xem tang_hang).')
+    tang_hang('tu_mat', [(z, -0.44, 0.44, -0.3, 0.27) for z in TM_TANG])
+    return o
+
+# 5b. Ngăn mát mở (kệ lạnh không cửa): sữa chua, sữa, rau củ
+KM_TANG = (0.64, 0.99, 1.31, 1.63)
+def ke_mat():
+    P = []
+    W, D, H = 1.25, 0.85, 2.0
+    V = C['vo_tu']
+    T = C['trong_tu']
+    for sx in (-1, 1):                                                            # hông bậc thang
+        x = sx * (W / 2 - 0.02)
+        box(P, (0.04, D, 0.9), (x, 0, 0.45), V)
+        box(P, (0.04, D * 0.62, H - 0.9), (x, D * 0.19, 0.9 + (H - 0.9) / 2), V)
+        box(P, (0.042, 0.02, 0.9), (x, -D / 2 + 0.01, 0.45), C['thuong_hieu'])    # nẹp đỏ mép hông
+    box(P, (W, 0.05, H), (0, D / 2 - 0.025, H / 2), V)                            # lưng
+    box(P, (W - 0.08, 0.01, H - 0.7), (0, D / 2 - 0.055, 0.68 + (H - 0.7) / 2), T)  # vách trong sáng
+    box(P, (W, 0.14, 0.62), (0, -D / 2 + 0.07, 0.31), V)                          # mặt trước đế
+    box(P, (W - 0.04, D - 0.2, 0.62), (0, 0.06, 0.31), C['nhua_xam'])             # khối máy
+    box(P, (W, 0.02, 0.08), (0, -D / 2 - 0.01, 0.42), C['thuong_hieu'])           # dải chắn va
+    for i in range(4):
+        box(P, (W - 0.16, 0.004, 0.012), (0, -D / 2 - 0.002, 0.08 + i * 0.026), C['nhua_den'])  # lưới gió
+    box(P, (W - 0.06, D - 0.14, 0.02), (0, 0.04, KM_TANG[0] - 0.01), T)            # khay đáy (tầng 1)
+    box(P, (W - 0.1, 0.03, 0.012), (0, -D / 2 + 0.17, KM_TANG[0] + 0.004), C['den_lanh'])  # khe gió lạnh
+    box(P, (W - 0.06, 0.01, 0.07), (0, -D / 2 + 0.1, KM_TANG[0] + 0.02), C['kinh'])  # tấm chắn trước khay
+    for i, z in enumerate(KM_TANG[1:]):                                           # 3 kệ, càng lên càng ngắn
+        d = 0.5 - i * 0.04
+        yb = D / 2 - 0.06
+        box(P, (W - 0.08, d, 0.02), (0, yb - d / 2, z - 0.01), C['thep'])
+        box(P, (W - 0.08, 0.008, 0.045), (0, yb - d - 0.004, z + 0.01), C['tem_gia'])
+        for x in (-0.4, 0, 0.4):
+            box(P, (0.06, 0.004, 0.025), (x, yb - d - 0.01, z + 0.012), C['giay'])
+    box(P, (W, 0.52, 0.06), (0, D / 2 - 0.26, H - 0.03), V)                       # mái che
+    box(P, (W, 0.04, 0.15), (0, D / 2 - 0.52, H - 0.075), C['thuong_hieu'])       # viền mái
+    box(P, (W - 0.1, 0.01, 0.06), (0, D / 2 - 0.545, H - 0.075), C['den_lanh'])   # đèn viền
+    box(P, (W - 0.1, 0.04, 0.015), (0, D / 2 - 0.4, H - 0.07), C['den_lanh'])     # đèn dưới mái
+    cyl(P, 0.03, W - 0.1, (0, D / 2 - 0.46, H - 0.18), C['nhua_xam'], n=8, rot=(0, math.pi / 2, 0))  # rèm đêm cuộn
+    o = finish(P, 'ke_mat', 'Ngăn mát mở (kệ lạnh)',
+               '1,25×2,0 m, không cửa, 4 tầng (khay đáy + 3 kệ ngắn dần), mái có đèn, rèm đêm cuộn trên cao, '
+               'khe gió lạnh xanh. Đặt thành dãy dọc tường; game tự xếp hàng.')
+    tang_hang('ke_mat', [(KM_TANG[0], -0.56, 0.56, -0.3, 0.26)] +
+              [(z, -0.56, 0.56, -(D / 2 - 0.06), -(D / 2 - 0.06) + 0.5 - i * 0.04 - 0.02) for i, z in enumerate(KM_TANG[1:])])
+    return o
+
+# 5c. Tủ đông nằm (kem, đồ đông lạnh), nắp kính trượt
+TD_DAY = 0.5   # đáy lòng tủ cao: hàng chất gần miệng tủ, nhìn qua nắp kính thấy rõ
+def tu_dong():
+    P = []
+    W, D, H = 1.8, 0.9, 0.85
+    V = C['vo_tu']
+    T = C['trong_tu']
+    box(P, (W, 0.06, H), (0, -D / 2 + 0.03, H / 2), V)                            # 4 vách
+    box(P, (W, 0.06, H), (0, D / 2 - 0.03, H / 2), V)
+    for sx in (-1, 1):
+        box(P, (0.06, D - 0.12, H), (sx * (W / 2 - 0.03), 0, H / 2), V)
+    box(P, (W - 0.12, D - 0.12, TD_DAY), (0, 0, TD_DAY / 2), C['nhua_xam'])         # đáy + máy nén
+    box(P, (W - 0.12, D - 0.12, 0.01), (0, 0, TD_DAY - 0.005), T)                   # đáy lòng tủ
+    box(P, (W - 0.14, 0.008, H - TD_DAY - 0.04), (0, -D / 2 + 0.065, TD_DAY + (H - TD_DAY) / 2 - 0.02), T)
+    box(P, (W - 0.14, 0.008, H - TD_DAY - 0.04), (0, D / 2 - 0.065, TD_DAY + (H - TD_DAY) / 2 - 0.02), T)
+    box(P, (0.025, D - 0.14, 0.3), (0, 0, TD_DAY + 0.15), C["thep"])               # vách ngăn giữa (2 ngăn)
+    box(P, (W + 0.02, D + 0.02, 0.07), (0, 0, 0.13), C['thuong_hieu'])            # dải chắn va quanh thân
+    for i in range(4):
+        box(P, (0.5, 0.004, 0.014), (W / 2 - 0.4, -D / 2 - 0.012, 0.25 + i * 0.03), C['nhua_den'])  # lưới gió
+    box(P, (0.09, 0.004, 0.035), (-W / 2 + 0.16, -D / 2 - 0.002, H - 0.12), C['nhua_den'])
+    box(P, (0.07, 0.003, 0.022), (-W / 2 + 0.16, -D / 2 - 0.005, H - 0.12), C['den_xanh'])  # nhiệt kế -18°C
+    for (w, d, x, y) in ((W, 0.08, 0, -D / 2 + 0.04), (W, 0.08, 0, D / 2 - 0.04), (0.08, D, -W / 2 + 0.04, 0), (0.08, D, W / 2 - 0.04, 0)):
+        box(P, (w, d, 0.035), (x, y, H + 0.0175), C['nhua_xam'])                  # viền miệng tủ
+    for i, sx in enumerate((-1, 1)):                                              # 2 nắp kính trượt, lệch tầng
+        cx = sx * (W / 4 - 0.02) + (0.18 if i == 0 else 0)                       # nắp trái hé mở
+        z = H + 0.04 + i * 0.018
+        box(P, (W / 2 - 0.06, D - 0.12, 0.01), (cx, 0, z), C['kinh_mo'])
+        box(P, (W / 2 - 0.06, 0.03, 0.02), (cx, -D / 2 + 0.075, z), C['nhom'])
+        box(P, (W / 2 - 0.06, 0.03, 0.02), (cx, D / 2 - 0.075, z), C['nhom'])
+        box(P, (0.04, 0.12, 0.025), (cx - sx * (W / 4 - 0.07), -0.2, z + 0.012), C['nhua_den'])  # tay kéo
+    o = finish(P, 'tu_dong', 'Tủ đông nằm',
+               '1,8×0,9×0,85 m, 2 nắp kính trượt (nắp trái hé mở), lòng tủ chia 2 ngăn bằng vách thép, '
+               'nhiệt kế xanh. Hàng xếp nằm dưới đáy (tang_hang), nhìn qua nắp kính.')
+    tang_hang('tu_dong', [(TD_DAY, -0.84, -0.03, -0.37, 0.37), (TD_DAY, 0.03, 0.84, -0.37, 0.37)])
+    return o
 
 # 6. Quầy thu ngân
 def quay_thu_ngan():
@@ -473,6 +584,30 @@ def hop_sua():
     box(P, (w, 0.006, 0.012), (0, 0, h + g + 0.004), C['sua_trang'])
     return finish(P, 'hh_hop_sua', 'Hộp sữa giấy', 'Cao 18 cm, nắp mái nhà.')
 
+# Hàng lạnh
+def kem_hop():
+    P = []
+    cyl(P, 0.058, 0.075, (0, 0, 0.0375), C['kem_hong'], n=10, r2=0.064)
+    cyl(P, 0.066, 0.014, (0, 0, 0.082), C['nap_trang'], n=10)
+    box(P, (0.05, 0.004, 0.03), (0, -0.061, 0.04), C['kem_nau'], rot=(0.08, 0, 0))
+    return finish(P, 'hh_kem', 'Hộp kem', 'Hộp tròn 13 cm, cao 9 cm. Xếp chồng trong tủ đông.')
+
+def goi_dong():
+    P = []
+    box(P, (0.2, 0.27, 0.045), (0, 0, 0.0225), C['dong_xanh'], bev=0.012)          # túi nằm phẳng
+    box(P, (0.13, 0.11, 0.004), (0, -0.05, 0.046), C['dong_trang'])                # cửa sổ thấy hàng
+    box(P, (0.202, 0.04, 0.03), (0, 0.1, 0.022), C['mi_do'])                       # dải đỏ
+    return finish(P, 'hh_goi_dong', 'Gói đồ đông lạnh', '20×27 cm, nằm phẳng (sủi cảo, xúc xích). Xếp lớp trong tủ đông.')
+
+def sua_chua():
+    P = []
+    for x in (-0.034, 0.034):
+        for y in (-0.034, 0.034):
+            cyl(P, 0.031, 0.06, (x, y, 0.03), C['sua_trang'], n=8, r2=0.027)
+            cyl(P, 0.029, 0.004, (x, y, 0.062), C['nhom'], n=8)
+    box(P, (0.14, 0.14, 0.025), (0, 0, 0.03), C['sc_vang'])                        # đai giấy lốc 4
+    return finish(P, 'hh_sua_chua', 'Lốc sữa chua', '4 hũ, 14×14 cm, cao 6,5 cm. Bày ở ngăn mát.')
+
 # 3b. Nhân viên bản ngố (để so sánh): lùn, đầu to, tay to, mắt chấm, thẻ đeo cổ to đung đưa
 def nhan_vien_ngo():
     P = []
@@ -540,8 +675,9 @@ def den_pin():
     box(P, (0.014, 0.03, 0.01), (0, 0.01, 0.046), C['thuong_hieu'])
     return finish(P, 'den_pin', 'Đèn pin', 'Dài 18 cm. Mỗi người một cái, dùng khi siêu thị mất điện.')
 
-builders = [ke_hang, nguoi_kiem_ke, nhan_vien, nhan_vien_ngo,thung_carton, tu_mat, quay_thu_ngan, bang_dong_lanh,
-            may_cham_cong, the_nhan_vien, may_quet, den_pin, xe_day, lon_nuoc, hop_banh, chai_nuoc, goi_mi, hop_sua]
+builders = [ke_hang, nguoi_kiem_ke, nhan_vien, nhan_vien_ngo, thung_carton, tu_mat, ke_mat, tu_dong, quay_thu_ngan,
+            bang_dong_lanh, may_cham_cong, the_nhan_vien, may_quet, den_pin, xe_day, lon_nuoc, hop_banh, chai_nuoc,
+            goi_mi, hop_sua, kem_hop, goi_dong, sua_chua]
 for b in builders:
     b()
 
@@ -1198,6 +1334,7 @@ if RENDER:
         x.hide_render = False
     get = {meta['file'][:-4]: o for o, meta in MODELS}
     place = {
+        'ke_mat': (-6.2, 0.4, 0), 'tu_dong': (-4.8, -1.2, 0),
         'tu_mat': (-3.4, 0.4, 0), 'ke_hang': (-1.9, 0.3, 0), 'nguoi_kiem_ke': (-0.55, -0.3, 0),
         'nhan_vien': (0.2, -0.5, 0), 'nhan_vien_ngo': (0.85, -0.45, 0),'quay_thu_ngan': (2.6, 0.5, 0), 'thung_carton': (1.2, -0.9, 0),
         'xe_day': (-1.2, -1.2, 0), 'bang_dong_lanh': (-2.7, -1.1, 0), 'may_cham_cong': (-2.0, -1.4, 0),
@@ -1210,7 +1347,59 @@ if RENDER:
     get['xe_day'].rotation_euler = (0, 0, 0.5)
     # bày hàng lên kệ và tủ mát (chỉ để xem, không xuất)
     goods = [get[k] for k in ('hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua')]
-    for g in goods:
+    cold = {k: get[k] for k in ('hh_kem', 'hh_goi_dong', 'hh_sua_chua')}
+    for g in goods + list(cold.values()):
+        g.hide_render = True
+
+    def put(src, loc, rotz=0.0):
+        d = src.copy()
+        scene.collection.objects.link(d)
+        d.hide_render = False
+        d.location = loc
+        d.rotation_euler = (0, 0, rotz)
+        return d
+
+    # Ngăn mát: sữa chua tầng dưới, sữa hộp và chai ở trên (chừa chỗ trống)
+    mx, my, _ = place['ke_mat']
+    for li, z in enumerate(KM_TANG):
+        src = cold['hh_sua_chua'] if li < 2 else goods[4] if li == 2 else goods[2]
+        step = 0.15 if li < 2 else 0.085
+        ydep = (-0.2,) if li == 0 else (0.08,) if li < 3 else (0.12,)
+        for i in range(int(1.1 / step)):
+            if (li * 5 + i) % 7 == 3:
+                continue
+            for yy in ydep:
+                put(src, (mx - 0.55 + step / 2 + i * step, my + yy, z))
+    # Tủ đông: kem ngăn trái, đồ đông lạnh ngăn phải (xếp 2 lớp)
+    fx, fy, _ = place['tu_dong']
+    for i in range(6):
+        for j in range(5):
+            put(cold['hh_kem'], (fx - 0.78 + i * 0.13, fy - 0.3 + j * 0.15, TD_DAY))
+    for layer in range(2):
+        for i in range(3):
+            for j in range(2):
+                put(cold['hh_goi_dong'], (fx + 0.15 + i * 0.22, fy - 0.17 + j * 0.3, TD_DAY + layer * 0.047), 0.05 * (i - j))
+    # Tủ mát cửa kính: lon và chai, 2 hàng sâu
+    tx, ty, _ = place['tu_mat']
+    for li, z in enumerate(TM_TANG):
+        src = goods[0] if li < 2 else goods[4] if li == 2 else goods[2]
+        for i in range(10):
+            if li == 3 and i in (4, 5, 6):
+                continue  # một khúc hết hàng
+            for yy in (-0.2, -0.05):
+                put(src, (tx - 0.4 + i * 0.09, ty + yy, z))
+    # Ảnh riêng khu hàng lạnh
+    coldset = [get['ke_mat'], get['tu_dong'], get['tu_mat']]
+    for x in allm:
+        x.hide_render = x not in coldset and x not in RIGS.values()
+    for k in RIGS:
+        RIGS[k].hide_render = True
+        objs[k].hide_render = True
+    frame(cam, coldset, direction=(0.55, -1.6, 0.85), pad=0.85)
+    render_to(os.path.join(OUT_PREV, 'tu_lanh_co_hang.png'))
+    for x in allm:
+        x.hide_render = False
+    for g in goods + list(cold.values()):
         g.hide_render = True
     kx, ky, _ = place['ke_hang']
     for li, z in enumerate((0.175, 0.615, 1.055, 1.495)):
@@ -1224,14 +1413,6 @@ if RENDER:
             scene.collection.objects.link(d)
             d.hide_render = False
             d.location = (kx - 0.58 + step / 2 + i * step, ky - 0.33, z)
-    tx, ty, _ = place['tu_mat']
-    for z in (0.25, 0.64, 1.06, 1.48):
-        for i in range(10):
-            src = goods[0] if z < 1 else goods[2]
-            d = src.copy()
-            scene.collection.objects.link(d)
-            d.hide_render = False
-            d.location = (tx - 0.4 + i * 0.09, ty - 0.12, z)
     scene.render.resolution_x, scene.render.resolution_y = 1600, 900
     cam.data.lens = 40
     frame(cam, [get[k] for k in place], direction=(0.3, -1.6, 0.9), pad=0.8)

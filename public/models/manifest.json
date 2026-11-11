@@ -193,14 +193,121 @@
   {
     "file": "tu_mat.glb",
     "ten": "Tủ mát cửa kính",
-    "mo_ta": "1,0×2,1 m, 2 cánh kính trong suốt, đèn lạnh xanh bên trong và bảng đèn trên nóc. Đặt 15 cái dọc tường tây.",
-    "tris": 348,
+    "mo_ta": "1,0×2,1 m, 2 cánh kính hơi sương, lòng tủ sáng, 5 tầng (đáy + 4 kệ lưới có nẹp giá), đèn LED dọc. Lòng tủ để trống: game tự xếp nước, sữa vào các tầng (xem tang_hang).",
+    "tris": 660,
     "kich_thuoc_m": [
       1.0,
-      2.26,
-      0.83
+      2.28,
+      0.835
     ],
-    "kb": 31.6
+    "tang_hang": [
+      {
+        "y": 0.215,
+        "x0": -0.44,
+        "x1": 0.44,
+        "z0": -0.3,
+        "z1": 0.27
+      },
+      {
+        "y": 0.585,
+        "x0": -0.44,
+        "x1": 0.44,
+        "z0": -0.3,
+        "z1": 0.27
+      },
+      {
+        "y": 0.955,
+        "x0": -0.44,
+        "x1": 0.44,
+        "z0": -0.3,
+        "z1": 0.27
+      },
+      {
+        "y": 1.325,
+        "x0": -0.44,
+        "x1": 0.44,
+        "z0": -0.3,
+        "z1": 0.27
+      },
+      {
+        "y": 1.695,
+        "x0": -0.44,
+        "x1": 0.44,
+        "z0": -0.3,
+        "z1": 0.27
+      }
+    ],
+    "kb": 54.7
+  },
+  {
+    "file": "ke_mat.glb",
+    "ten": "Ngăn mát mở (kệ lạnh)",
+    "mo_ta": "1,25×2,0 m, không cửa, 4 tầng (khay đáy + 3 kệ ngắn dần), mái có đèn, rèm đêm cuộn trên cao, khe gió lạnh xanh. Đặt thành dãy dọc tường; game tự xếp hàng.",
+    "tris": 472,
+    "kich_thuoc_m": [
+      1.252,
+      2.0,
+      0.87
+    ],
+    "tang_hang": [
+      {
+        "y": 0.64,
+        "x0": -0.56,
+        "x1": 0.56,
+        "z0": -0.3,
+        "z1": 0.26
+      },
+      {
+        "y": 0.99,
+        "x0": -0.56,
+        "x1": 0.56,
+        "z0": -0.365,
+        "z1": 0.115
+      },
+      {
+        "y": 1.31,
+        "x0": -0.56,
+        "x1": 0.56,
+        "z0": -0.365,
+        "z1": 0.075
+      },
+      {
+        "y": 1.63,
+        "x0": -0.56,
+        "x1": 0.56,
+        "z0": -0.365,
+        "z1": 0.035
+      }
+    ],
+    "kb": 40.5
+  },
+  {
+    "file": "tu_dong.glb",
+    "ten": "Tủ đông nằm",
+    "mo_ta": "1,8×0,9×0,85 m, 2 nắp kính trượt (nắp trái hé mở), lòng tủ chia 2 ngăn bằng vách thép, nhiệt kế xanh. Hàng xếp nằm dưới đáy (tang_hang), nhìn qua nắp kính.",
+    "tris": 336,
+    "kich_thuoc_m": [
+      1.82,
+      0.933,
+      0.924
+    ],
+    "tang_hang": [
+      {
+        "y": 0.5,
+        "x0": -0.84,
+        "x1": -0.03,
+        "z0": -0.37,
+        "z1": 0.37
+      },
+      {
+        "y": 0.5,
+        "x0": 0.03,
+        "x1": 0.84,
+        "z0": -0.37,
+        "z1": 0.37
+      }
+    ],
+    "kb": 30.9
   },
   {
     "file": "quay_thu_ngan.glb",
@@ -345,5 +452,41 @@
       0.072
     ],
     "kb": 5.0
+  },
+  {
+    "file": "hh_kem.glb",
+    "ten": "Hộp kem",
+    "mo_ta": "Hộp tròn 13 cm, cao 9 cm. Xếp chồng trong tủ đông.",
+    "tris": 84,
+    "kich_thuoc_m": [
+      0.126,
+      0.089,
+      0.132
+    ],
+    "kb": 7.6
+  },
+  {
+    "file": "hh_goi_dong.glb",
+    "ten": "Gói đồ đông lạnh",
+    "mo_ta": "20×27 cm, nằm phẳng (sủi cảo, xúc xích). Xếp lớp trong tủ đông.",
+    "tris": 68,
+    "kich_thuoc_m": [
+      0.202,
+      0.048,
+      0.27
+    ],
+    "kb": 7.7
+  },
+  {
+    "file": "hh_sua_chua.glb",
+    "ten": "Lốc sữa chua",
+    "mo_ta": "4 hũ, 14×14 cm, cao 6,5 cm. Bày ở ngăn mát.",
+    "tris": 236,
+    "kich_thuoc_m": [
+      0.14,
+      0.064,
+      0.14
+    ],
+    "kb": 16.4
   }
 ]

@@ -32,8 +32,24 @@ export function labelTexture(lines: string[], s: LabelStyle = {}): THREE.CanvasT
   return tex;
 }
 
+/**
+ * Biển một mặt, chữ đọc được từ phía +Z của nó (xoay rotation.y để quay mặt).
+ * Chỉ vẽ mặt trước: nhìn từ phía sau không thấy, tránh chữ bị ngược như soi gương.
+ */
 export function labelPlane(lines: string[], width: number, height: number, s: LabelStyle = {}): THREE.Mesh {
   const tex = labelTexture(lines, { w: 512, h: Math.round((512 * height) / width), ...s });
-  const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, toneMapped: false });
+  const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.FrontSide, toneMapped: false });
   return new THREE.Mesh(new THREE.PlaneGeometry(width, height), mat);
+}
+
+/** Biển treo hai mặt: hai tấm quay lưng vào nhau, đứng phía nào cũng đọc xuôi. */
+export function labelSign(lines: string[], width: number, height: number, s: LabelStyle = {}): THREE.Group {
+  const g = new THREE.Group();
+  const front = labelPlane(lines, width, height, s);
+  front.position.z = 0.004;
+  const back = new THREE.Mesh(front.geometry, front.material);
+  back.rotation.y = Math.PI;
+  back.position.z = -0.004;
+  g.add(front, back);
+  return g;
 }

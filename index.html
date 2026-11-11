@@ -10,6 +10,7 @@
 
     <div id="hud" hidden>
       <div id="clock"></div>
+      <div id="orders" hidden></div>
       <div id="badge">
         <div class="ph"></div>
         <div>
@@ -36,7 +37,7 @@
 
     <div id="menu" class="overlay">
       <div class="panel">
-        <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi · siêu thị khối xám</p>
+        <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi</p>
         <h1>Hợp Đồng <span>30 Đêm</span></h1>
         <p class="lead">Thử việc 5 đêm, mỗi đêm khoảng 4,5 phút. Làm đủ chỉ tiêu <b>sau lưng Người Kiểm Kê</b>. Bị tia quét đỏ giữ 2 giây là bị đóng thùng.</p>
         <div class="cols">
@@ -44,15 +45,18 @@
             <li><b>WASD</b> đi · <b>Shift</b> chạy (ồn)</li>
             <li><b>E</b> lấy thùng / xếp hàng / ghi nhiệt độ</li>
             <li><b>Giữ F</b> quét kệ (máy quét kêu bíp)</li>
-            <li><b>Q</b> ném lon nước để dụ nó</li>
+            <li><b>Q</b> ném lon nước để dụ nó · <b>E</b> nhặt lại (06:00 mỗi lon còn trên sàn bị trừ 1 công)</li>
             <li><b>T</b> đèn pin (khi mất điện) · <b>G</b> thả thùng để chạy</li>
             <li><b>Tab</b> phiếu việc · <b>F3</b> thông tin gỡ lỗi</li>
+            <li><b>P</b> bảng sự kiện (chơi thử: mất điện, tua giờ, chỉnh thông số)</li>
           </ul>
           <ul>
-            <li>Quét kệ: 2 công · xếp kệ thiếu hàng: 1 công</li>
+            <li>Quét kệ: 2 công · xếp kệ thiếu hàng: 1 công · xếp tủ lạnh HẾT HÀNG (thùng xốp ở KHO LẠNH): 2 công</li>
             <li>Ghi nhiệt độ ở kho lạnh: 1 công, việc an toàn chỉ tính tối đa nửa chỉ tiêu</li>
-            <li>06:00 phải có mặt ở quầy</li>
+            <li>06:00 phải có mặt ở <b>máy chấm công</b> (cửa nhân viên, trong kho)</li>
             <li>Thiếu công hoặc vắng điểm danh: thẻ bị bấm 1 lỗ. 3 lỗ là hết.</li>
+            <li><b>Chỉ tiêu chỉ là mức tối thiểu.</b> Suốt ca máy in giao thêm phiếu việc có hạn giờ. Trễ hạn: bị bấm lỗ, và siêu thị tối dần.</li>
+            <li>Vượt 150% chỉ tiêu: nhận phiếu khen, tự xoá lỗ kế tiếp.</li>
           </ul>
         </div>
         <label for="name">Tên nhân viên</label>
@@ -78,6 +82,7 @@
 
     <div id="death" hidden data-stage="off">
       <div class="red"><p>BÍP ————</p><p id="death-line"></p></div>
+      <div class="cine"><p id="death-cine"></p></div>
       <div class="black"><div class="slit"></div><p>Hồ sơ đã được lưu kho.</p></div>
     </div>
 
@@ -94,6 +99,8 @@
         <button onclick="location.reload()" class="ghost">Chơi lại</button>
       </div>
     </div>
+
+    <aside id="dev" hidden></aside>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

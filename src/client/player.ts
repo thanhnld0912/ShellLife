@@ -14,11 +14,19 @@ export class PlayerController {
   flashOn = false;
   readonly flash: THREE.SpotLight;
   keys = new Set<string>();
+  /** Tốc độ (m/s). Chỉnh được trong bảng sự kiện. Ôm thùng chạy phải thua Người Kiểm Kê chạy (3,4+). */
+  speeds = { walk: 2.2, run: 3.8, carryWalk: 1.8, carryRun: 2.7 };
+  /** Độ sáng đèn pin khi bật. */
+  flashPower = 30;
   /** Gọi khi người chơi gây tiếng động: (vị trí, bán kính nghe, sai số). */
   onNoise: (at: V2, radius: number, error: number) => void = () => {};
 
   private camera: THREE.PerspectiveCamera;
-  private box: THREE.Mesh;
+  private box: THREE.Object3D;
+  /** Thùng xốp hàng lạnh (trắng, đai xanh). */
+  private coldBox: THREE.Object3D;
+  /** Loại thùng đang ôm. */
+  carryKind: 'dry' | 'cold' | null = null;
   private bob = 0;
   private runNoiseT = 0;
   private carryNoiseT = 0;
@@ -32,6 +40,16 @@ export class PlayerController {
     this.box.position.set(0, -0.42, -0.6);
     this.box.visible = false;
     camera.add(this.box);
+    const foam = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.3, 0.42), new THREE.MeshLambertMaterial({ color: 0xeef2f0 }));
+    const band = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.05, 0.44), new THREE.MeshLambertMaterial({ color: 0x2f7fc1 }));
+    band.position.y = -0.09;
+    foam.add(band);
+    foam.scale.setScalar(0.85);
+    foam.position.set(0, -0.5, -0.62);
+    foam.rotation.y = 0.12;
+    foam.visible = false;
+    camera.add(foam);
+    this.coldBox = foam;
     // Đèn pin cầm tay phải, hơi chúc xuống
     this.flash = new THREE.SpotLight(0xfff1d6, 0, 22, 0.42, 0.55, 1.3);
     this.flash.position.set(0.2, -0.22, -0.1);
@@ -47,6 +65,19 @@ export class PlayerController {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  /** Thay khối thùng đang ôm bằng model (gốc model ở giữa đáy). */
+  setCarryModel(model: THREE.Object3D): void {
+    // Thu nhỏ một chút cho khỏi che tầm nhìn (mép trên ngang khối thùng cũ)
+    model.scale.setScalar(0.8);
+    model.position.set(0, -0.66, -0.6);
+    model.rotation.y = 0.15;
+    model.visible = this.box.visible;
+    model.traverse((o) => (o.castShadow = false));
+    this.camera.remove(this.box);
+    this.camera.add(model);
+    this.box = model;
+  }
+
   teleport(p: V2, yaw = 0.5): void {
     this.pos = { ...p };
     this.camera.position.set(p.x, EYE, p.z);
@@ -55,12 +86,15 @@ export class PlayerController {
 
   setFlashlight(on: boolean): void {
     this.flashOn = on;
-    this.flash.intensity = on ? 30 : 0;
+    this.flash.intensity = on ? this.flashPower : 0;
   }
 
-  setCarrying(v: boolean): void {
-    this.carrying = v;
-    this.box.visible = v;
+  /** true / 'dry' = thùng hàng khô, 'cold' = thùng hàng lạnh, false = tay không. */
+  setCarrying(v: boolean | 'dry' | 'cold'): void {
+    this.carryKind = v === false ? null : v === 'cold' ? 'cold' : 'dry';
+    this.carrying = this.carryKind !== null;
+    this.box.visible = this.carryKind === 'dry';
+    this.coldBox.visible = this.carryKind === 'cold';
   }
 
   update(dt: number): { moving: boolean; running: boolean } {
@@ -81,7 +115,8 @@ export class PlayerController {
     const moving = len > 0.01;
     const running = moving && (k.has('ShiftLeft') || k.has('ShiftRight'));
     // Ôm thùng nặng: chậm hơn một chút. Chạy khi ôm thùng (2,7) thua kiểm kê viên chạy (3,4+) → muốn thoát phải thả thùng.
-    const speed = this.carrying ? (running ? 2.7 : 1.8) : running ? 3.8 : 2.2;
+    const sp = this.speeds;
+    const speed = this.carrying ? (running ? sp.carryRun : sp.carryWalk) : running ? sp.run : sp.walk;
 
     if (moving) {
       mx /= len;

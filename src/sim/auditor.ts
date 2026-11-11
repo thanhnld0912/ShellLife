@@ -1,21 +1,51 @@
 // Người Kiểm Kê: tuần tra, nhìn bằng tia quét, nghe tiếng động và lần theo điểm nghi ngờ.
 // Bình thường chỉ đi bộ. Khi MẤT ĐIỆN: nghe tiếng động hoặc thấy ánh đèn pin rọi tới thì CHẠY tới.
-// Bị tia quét giữ đủ countTime giây thì người chơi bị "đóng thùng".
+// Bị tia quét giữ đủ countTime giây thì người chơi bị "đóng thùng":
+//   lunge (lao tới) → boxing (nhét vào thùng, dán băng keo) → carry (bê thùng về kho)
+//   → store (đặt thùng vào hàng "ĐÃ LƯU KHO") → đi tuần tiếp như bình thường.
 
 import type { AABB, V2 } from './geometry.ts';
 import { clamp, dist, headingTo, inBox, inflate, rayAABB, segIntersectsAABB, turnToward, wrapAngle } from './geometry.ts';
-import { AUDITOR_DOOR, AUDITOR_SPAWN, COUNTER, MOVE_BLOCKERS, NAV_X, NAV_Z, OCCLUDERS, SHELVES } from './layout.ts';
+import {
+  AUDITOR_DOOR, AUDITOR_SPAWN, CHILLERS, COOLERS, COUNTER, FREEZERS, MOVE_BLOCKERS, NAV_X, NAV_Z, OCCLUDERS, SHELVES, STORE,
+  storageSlot, storageStand,
+} from './layout.ts';
 
-export type AuditorState = 'idle' | 'enter' | 'patrol' | 'alert' | 'investigate' | 'search' | 'count' | 'caught';
+export type AuditorState =
+  | 'idle' | 'enter' | 'patrol' | 'alert' | 'investigate' | 'search' | 'count'
+  | 'lunge' | 'boxing' | 'carry' | 'store';
+
+/** Các trạng thái của cảnh đóng thùng (không nhìn, không nghe ai khác). */
+export const CAPTURE_STATES: readonly AuditorState[] = ['lunge', 'boxing', 'carry', 'store'];
+
+/** Thời gian cảnh nhét vào thùng (giây) và đặt thùng xuống. */
+export const BOXING_TIME = 3.0;
+export const STORE_TIME = 1.0;
+/** Tốc độ lao tới khi đếm xong (m/s): nhanh hơn mọi tốc độ chạy. */
+export const LUNGE_SPEED = 6.0;
 
 export type AuditorEvent =
   | { type: 'heard'; at: V2 }
   | { type: 'light'; at: V2 }
   | { type: 'count'; n: number }
-  | { type: 'caught' }
+  /** Đếm đủ: bắt đầu lao tới chỗ người chơi. */
+  | { type: 'caught'; at: V2 }
+  /** Tới nơi, bắt đầu nhét vào thùng. */
+  | { type: 'boxing'; at: V2 }
+  /** Đóng thùng xong, bê đi. */
+  | { type: 'boxed'; at: V2 }
+  /** Đã đặt thùng vào kho. */
+  | { type: 'stored'; at: V2 }
   | { type: 'lost' }
   | { type: 'step' }
   | { type: 'beep' };
+
+/** Đang trong cảnh đóng thùng: chỗ bắt, chỗ đứng đặt thùng, ô thùng trong kho. */
+export interface Capture {
+  at: V2;
+  stand: V2;
+  slot: V2;
+}
 
 export interface AuditorTuning {
   speed: number;
@@ -26,6 +56,8 @@ export interface AuditorTuning {
   halfAngle: number;
   hearMul: number;
   countTime: number;
+  /** Khi mất điện: thấy ánh đèn pin trong khoảng cách này (m). */
+  lightSight: number;
 }
 
 export function tuningForNight(n: number): AuditorTuning {
@@ -37,6 +69,7 @@ export function tuningForNight(n: number): AuditorTuning {
     halfAngle: 0.2,
     hearMul: 1 + 0.1 * (n - 1),
     countTime: 2.0,
+    lightSight: 16,
   };
 }
 
@@ -64,18 +97,26 @@ export function pathClear(a: V2, b: V2): boolean {
 interface NavNode { p: V2; n: number[] }
 const NODES: NavNode[] = [];
 {
-  const nz = NAV_Z.length;
-  const idx = (i: number, j: number) => i * nz + j;
-  NAV_X.forEach((x) => NAV_Z.forEach((z) => NODES.push({ p: { x, z }, n: [] })));
-  const link = (a: number, b: number) => {
+  // Mỗi giao điểm (làn dọc × làn ngang) là một nút, trừ chỗ nằm trong vật cản.
+  // Hai nút kề nhau (ngang hoặc dọc) được nối nếu đi thẳng giữa chúng không vướng gì.
+  const grid = new Map<string, number>();
+  NAV_X.forEach((x, i) =>
+    NAV_Z.forEach((z, j) => {
+      const p = { x, z };
+      if (MOVE_INFLATED.some((b) => inBox(p, b))) return;
+      grid.set(`${i},${j}`, NODES.length);
+      NODES.push({ p, n: [] });
+    }),
+  );
+  const link = (a: number | undefined, b: number | undefined) => {
+    if (a === undefined || b === undefined || !pathClear(NODES[a].p, NODES[b].p)) return;
     NODES[a].n.push(b);
     NODES[b].n.push(a);
   };
   for (let i = 0; i < NAV_X.length; i++) {
-    for (let j = 0; j < nz; j++) {
-      if (i + 1 < NAV_X.length) link(idx(i, j), idx(i + 1, j));
-      const side = i === 0 || i === NAV_X.length - 1;
-      if (side && j + 1 < nz) link(idx(i, j), idx(i, j + 1));
+    for (let j = 0; j < NAV_Z.length; j++) {
+      link(grid.get(`${i},${j}`), grid.get(`${i + 1},${j}`));
+      link(grid.get(`${i},${j}`), grid.get(`${i},${j + 1}`));
     }
   }
 }
@@ -140,11 +181,14 @@ export const ROUTE: V2[] = (() => {
 
 /** Đưa điểm nghi ngờ về chỗ Người Kiểm Kê đi tới được (trong khu bán hàng, ngoài kệ). */
 function walkablePoint(p: V2): V2 {
-  const s = { x: clamp(p.x, 1.8, 22.4), z: clamp(p.z, 7.0, 23.2) };
+  const s = { x: clamp(p.x, COOLERS.maxX + 0.8, CHILLERS.minX - 0.6), z: clamp(p.z, STORE.backZ + 1.0, STORE.d - 0.8) };
   for (const sh of SHELVES) {
     if (inBox(s, inflate(sh.box, 0.35))) s.z = s.z < sh.zc ? sh.box.minZ - 0.6 : sh.box.maxZ + 0.6;
   }
   if (inBox(s, inflate(COUNTER, 0.4))) s.x = COUNTER.minX - 0.6;
+  for (const f of FREEZERS) {
+    if (inBox(s, inflate(f, 0.4))) s.z = s.z < (f.minZ + f.maxZ) / 2 ? f.minZ - 0.6 : f.maxZ + 0.6;
+  }
   return s;
 }
 
@@ -162,6 +206,12 @@ export class Auditor {
   /** Đang chạy (chỉ xảy ra khi mất điện). */
   running = false;
   events: AuditorEvent[] = [];
+  /** Đang trong cảnh đóng thùng (null nếu không). */
+  capture: Capture | null = null;
+  /** Ô trong kho cho thùng kế tiếp (Game giữ số thùng đã lưu kho). */
+  storeIndex = 1;
+  /** Độ lệch sổ 0..1 (Game đặt): càng lệch càng nghe xa, quét xa, đi tuần nhanh. */
+  drift = 0;
   private urgent = false;
   private lightCd = 0;
 
@@ -188,6 +238,25 @@ export class Auditor {
     return this.state === 'count' ? this.countT / this.tune.countTime : 0;
   }
 
+  /** Đã ở trạng thái hiện tại bao lâu (giây). Dùng để diễn cảnh đóng thùng. */
+  get stateTime(): number {
+    return this.stateT;
+  }
+
+  /** Tầm tia quét thực tế (dài thêm khi sổ lệch). */
+  get range(): number {
+    return this.tune.range + 2.5 * this.drift;
+  }
+
+  get capturing(): boolean {
+    return CAPTURE_STATES.includes(this.state);
+  }
+
+  /** Đang chú ý cao độ (thấy người, nghe tiếng, đang lao tới): đèn máy quét chuyển đỏ. */
+  get alarmed(): boolean {
+    return this.state === 'alert' || this.state === 'investigate' || this.state === 'count' || this.state === 'lunge';
+  }
+
   activate(): void {
     if (this.state !== 'idle') return;
     this.state = 'enter';
@@ -195,10 +264,38 @@ export class Auditor {
     this.path = [{ ...AUDITOR_DOOR }];
   }
 
+  /** Thả người đang bị đếm (dùng khi bật "không chết" để thử): đứng tìm quanh đó. */
+  release(): void {
+    if (this.state !== 'count' && this.state !== 'lunge') return;
+    this.countT = 0;
+    this.counted = 0;
+    this.capture = null;
+    this.state = 'search';
+    this.stateT = 0;
+    this.path = [];
+  }
+
+  /** Cho về kho nghỉ (biến mất khỏi khu bán hàng) cho đến khi activate() lần nữa. */
+  retire(): void {
+    // Đang bê thùng thì coi như đã cất xong ngay
+    if (this.capture && (this.state === 'boxing' || this.state === 'carry' || this.state === 'store')) {
+      this.events.push({ type: 'stored', at: { ...this.capture.slot } });
+    }
+    this.capture = null;
+    this.state = 'idle';
+    this.pos = { ...AUDITOR_SPAWN };
+    this.heading = Math.PI;
+    this.beam = Math.PI;
+    this.path = [];
+    this.suspicion = null;
+    this.urgent = false;
+    this.countT = 0;
+  }
+
   canSee(p: V2): boolean {
     const d = dist(this.pos, p);
     if (d < 0.9) return true;
-    if (d > this.tune.range) return false;
+    if (d > this.range) return false;
     const half = this.tune.halfAngle + Math.min(0.5, 0.35 / d);
     if (Math.abs(wrapAngle(headingTo(this.pos, p) - this.beam)) > half) return false;
     return hasLOS(this.pos, p);
@@ -206,8 +303,8 @@ export class Auditor {
 
   /** Nghe một tiếng động. Trả về điểm nghi ngờ (có sai số) nếu nghe thấy. */
   hear(src: V2, radius: number, error: number): V2 | null {
-    if (this.state === 'idle' || this.state === 'count' || this.state === 'caught') return null;
-    const eff = radius * this.tune.hearMul * (hasLOS(this.pos, src) ? 1 : 0.7);
+    if (this.state === 'idle' || this.state === 'count' || this.capturing) return null;
+    const eff = radius * this.tune.hearMul * (1 + 0.5 * this.drift) * (hasLOS(this.pos, src) ? 1 : 0.7);
     if (dist(this.pos, src) > eff) return null;
     const ang = this.rng() * Math.PI * 2;
     const mag = error * (0.4 + 0.6 * this.rng());
@@ -223,7 +320,7 @@ export class Auditor {
 
   /** Khi mất điện, ánh đèn pin trong tầm mắt (rộng hơn tia quét) làm nó chú ý. */
   seesLight(p: V2): boolean {
-    if (dist(this.pos, p) > 16) return false;
+    if (dist(this.pos, p) > this.tune.lightSight) return false;
     if (Math.abs(wrapAngle(headingTo(this.pos, p) - this.heading)) > 1.15) return false;
     return hasLOS(this.pos, p);
   }
@@ -234,7 +331,12 @@ export class Auditor {
     this.moving = false;
     this.running = false;
     this.lightCd = Math.max(0, this.lightCd - dt);
-    if (this.state === 'idle' || this.state === 'caught') return;
+    if (this.state === 'idle') return;
+    if (this.capturing) {
+      this.updateCapture(dt);
+      this.footsteps(dt);
+      return;
+    }
 
     // --- Phát hiện bằng tia quét ---
     if (alive && this.canSee(player)) {
@@ -255,10 +357,7 @@ export class Auditor {
       const h = headingTo(this.pos, player);
       this.beam = h;
       this.heading = turnToward(this.heading, h, 4 * dt);
-      if (this.countT >= this.tune.countTime) {
-        this.state = 'caught';
-        this.events.push({ type: 'caught' });
-      }
+      if (this.countT >= this.tune.countTime) this.startCapture(player);
       return;
     }
     if (this.state === 'count') {
@@ -301,7 +400,7 @@ export class Auditor {
           this.sweep(0.7, 1.1);
           break;
         }
-        if (this.follow(dt, this.tune.speed)) this.advanceRoute();
+        if (this.follow(dt, this.tune.speed * (1 + 0.3 * this.drift))) this.advanceRoute();
         this.sweep(0.38, 1.7);
         break;
       case 'alert':
@@ -328,17 +427,86 @@ export class Auditor {
     }
 
     this.running = this.moving && this.urgent && this.state === 'investigate';
+    this.footsteps(dt);
+  }
+
+  private footsteps(dt: number): void {
     if (this.moving) {
       this.stepT += dt;
-      if (this.stepT > (this.running ? 0.34 : 0.62)) {
+      if (this.stepT > (this.running ? 0.3 : 0.62)) {
         this.stepT = 0;
         this.events.push({ type: 'step' });
       }
     }
     this.beepT += dt;
-    if (this.beepT > 1.5) {
+    if (this.beepT > 1.5 && this.state !== 'boxing' && this.state !== 'store') {
       this.beepT = 0;
       this.events.push({ type: 'beep' });
+    }
+  }
+
+  // ---- Cảnh đóng thùng ----
+
+  private setState(s: AuditorState): void {
+    this.state = s;
+    this.stateT = 0;
+  }
+
+  private startCapture(player: V2): void {
+    const at = { ...player };
+    this.capture = { at, stand: storageStand(this.storeIndex), slot: storageSlot(this.storeIndex) };
+    this.countT = 0;
+    this.counted = 0;
+    // Dừng cách người chơi 0,75 m
+    const d = dist(this.pos, at);
+    const stop = d > 0.8 ? { x: at.x + ((this.pos.x - at.x) / d) * 0.75, z: at.z + ((this.pos.z - at.z) / d) * 0.75 } : { ...this.pos };
+    this.path = pathClear(this.pos, stop) ? [stop] : planPath(this.pos, stop);
+    this.setState('lunge');
+    this.events.push({ type: 'caught', at: { ...at } });
+  }
+
+  private updateCapture(dt: number): void {
+    const c = this.capture!;
+    switch (this.state) {
+      case 'lunge': {
+        this.urgent = true;
+        const arrived = this.follow(dt, LUNGE_SPEED);
+        this.running = true;
+        this.beam = turnToward(this.beam, headingTo(this.pos, c.at), 8 * dt);
+        if (arrived || this.stateT > 6) {
+          this.urgent = false;
+          this.setState('boxing');
+          this.events.push({ type: 'boxing', at: { ...c.at } });
+        }
+        break;
+      }
+      case 'boxing': {
+        const h = headingTo(this.pos, c.at);
+        this.heading = turnToward(this.heading, h, 6 * dt);
+        this.beam = turnToward(this.beam, h, 6 * dt);
+        if (this.stateT >= BOXING_TIME) {
+          // Bê thùng về kho: ra lối giữa, qua cửa kho rồi tới chỗ đặt
+          this.path = [...planPath(this.pos, AUDITOR_DOOR), { x: AUDITOR_DOOR.x, z: 5.0 }, { ...c.stand }];
+          this.setState('carry');
+          this.events.push({ type: 'boxed', at: { ...c.at } });
+        }
+        break;
+      }
+      case 'carry':
+        if (this.follow(dt, this.tune.investigateSpeed)) this.setState('store');
+        this.beam = this.heading;
+        break;
+      case 'store': {
+        const h = headingTo(this.pos, c.slot);
+        this.heading = turnToward(this.heading, h, 5 * dt);
+        this.beam = this.heading;
+        if (this.stateT >= STORE_TIME) {
+          this.events.push({ type: 'stored', at: { ...c.slot } });
+          this.capture = null;
+          this.startPatrol();
+        }
+        break;
+      }
     }
   }
 
