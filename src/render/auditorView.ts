@@ -29,7 +29,7 @@ export class AuditorView {
   private alarm = 0;
   private light = 0;
 
-  constructor(scene: THREE.Scene, models: ModelLib | null = null) {
+  constructor(scene: THREE.Scene, models: ModelLib | null = null, shadows = true) {
     this.model = models?.instance('nguoi_kiem_ke') ?? null;
     if (this.model) this.body.add(this.model.root);
     else this.buildPlaceholder();
@@ -37,7 +37,8 @@ export class AuditorView {
 
     // Đèn tắt bằng intensity = 0 (không ẩn đèn: đổi số đèn làm mọi vật liệu phải biên dịch lại, giật hình)
     this.spot = new THREE.SpotLight(WHITE, 0, 10, 0.32, 0.45, 1.2);
-    this.spot.castShadow = true; // không chiếu xuyên kệ
+    this.spot.castShadow = shadows; // không chiếu xuyên kệ (máy yếu: tắt bóng cho nhẹ)
+    this.spot.shadow.autoUpdate = false;
     this.spot.shadow.mapSize.set(512, 512);
     this.spot.shadow.camera.near = 0.3;
     this.spot.shadow.bias = -0.002;
@@ -88,27 +89,44 @@ export class AuditorView {
     const m = this.model!;
     let name: string;
     let timeScale = 1;
+    /** Chuyển động một lần, khớp đúng thời điểm trong sim (cảnh bắt người: mọi máy thấy giống nhau). */
+    let once = false;
     if (a.state === 'count') name = 'dem';
     else if (a.state === 'alert') name = 'quay_dau';
-    else if (a.state === 'lunge') {
-      name = 'chay';
-      timeScale = 1.35;
-    } else if (a.state === 'boxing') name = 'quet'; // cúi quét mã thùng
-    else if (a.running) name = 'chay';
+    else if (a.state === 'lunge') name = 'lao_toi';
+    else if (a.state === 'boxing') {
+      name = 'bat'; // úp thùng, ấn bẹp, dán băng keo, quét mã, nhấc lên vai
+      once = true;
+    } else if (a.state === 'carry') {
+      name = 'vac_hop'; // vác thùng trên vai phải
+      timeScale = a.moving ? a.tune.investigateSpeed / 1.05 : 0.15;
+    } else if (a.state === 'store') {
+      name = 'dat_hop';
+      once = true;
+    } else if (a.running) name = 'chay';
     else if (a.moving) {
       name = 'di';
-      // khớp nhịp bước với tốc độ đi (đi tuần 1,0 m/s, đi điều tra / bê thùng nhanh hơn)
-      timeScale = a.state === 'investigate' || a.state === 'carry' ? a.tune.investigateSpeed / a.tune.speed : 1;
+      // khớp nhịp bước với tốc độ đi (đi tuần 1,0 m/s, đi điều tra nhanh hơn)
+      timeScale = a.state === 'investigate' ? a.tune.investigateSpeed / a.tune.speed : 1;
     } else if (a.state === 'search' || a.state === 'patrol') name = 'quet';
     else name = 'dung_im';
+    if (!m.clips.has(name)) {
+      // model cũ chưa có chuyển động mới
+      name = { lao_toi: 'chay', bat: 'quet', vac_hop: 'di', dat_hop: 'dung_im' }[name] ?? name;
+      once = false;
+    }
     if (name !== this.clip) {
       this.clip = name;
-      const quick = name === 'quay_dau' || name === 'dem' || name === 'chay';
-      this.action = playClip(m, this.action, name, { fade: quick ? 0.12 : 0.3, timeScale });
+      const quick = name === 'quay_dau' || name === 'dem' || name === 'chay' || name === 'lao_toi' || name === 'bat';
+      this.action = playClip(m, this.action, name, { fade: quick ? 0.12 : 0.3, timeScale, loop: !once });
     } else if (this.action) {
       this.action.timeScale = timeScale;
     }
     m.mixer.update(dt);
+    if (once && this.action) {
+      this.action.time = Math.min(a.stateTime, this.action.getClip().duration - 1e-3);
+      m.mixer.update(0);
+    }
   }
 
   /** Đèn máy quét: tắt / trắng / đỏ theo điện và mức báo động. */
@@ -121,6 +139,8 @@ export class AuditorView {
     if (a.state === 'count') target *= 0.8 + 0.35 * Math.sin(performance.now() / 55);
     this.light += (target - this.light) * Math.min(1, dt * 10);
     this.spot.intensity = this.light;
+    // Đèn đang tắt thì khỏi vẽ lại bản đồ bóng mỗi khung hình
+    this.spot.shadow.autoUpdate = this.light > 0.05;
     this.spot.color.copy(WHITE).lerp(RED, this.alarm);
     this.spot.distance = a.range + 1.5;
     this.spot.shadow.camera.far = a.range + 1.5;
@@ -130,13 +150,14 @@ export class AuditorView {
 
   /** power: siêu thị đang có điện. */
   update(a: Auditor, dt: number, debug: boolean, power = true): void {
-    const hidden = a.state === 'idle';
-    this.group.visible = !hidden;
+    // Chưa vào ca (idle): đứng im sau bàn văn phòng, nhìn ra cửa, đèn máy quét tắt
+    const idle = a.state === 'idle';
+    this.group.visible = true;
     this.group.position.set(a.pos.x, 0, a.pos.z);
     this.group.rotation.y = a.heading;
     this.beamPivot.rotation.y = a.beam - a.heading;
     if (this.model) {
-      if (!hidden) this.animate(a, dt);
+      this.animate(a, dt);
     } else {
       if (a.moving) this.walkT += dt * (a.running ? 13 : 7);
       this.body.position.y = a.moving ? Math.abs(Math.sin(this.walkT)) * (a.running ? 0.07 : 0.03) : 0;
@@ -145,7 +166,7 @@ export class AuditorView {
       const lookUp = a.state === 'alert' || a.state === 'count' || a.state === 'search';
       this.head.rotation.x += ((lookUp ? -0.05 : 0.45) - this.head.rotation.x) * Math.min(1, dt * 6);
     }
-    this.updateLight(a, dt, power, !hidden);
+    this.updateLight(a, dt, power, !idle);
     this.marker.visible = debug && !!a.suspicion;
     if (a.suspicion) this.marker.position.set(a.suspicion.x, 0.02, a.suspicion.z);
   }

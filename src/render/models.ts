@@ -8,7 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 export const MODEL_NAMES = [
-  'ke_hang', 'nguoi_kiem_ke', 'nhan_vien', 'thung_carton', 'tu_mat', 'quay_thu_ngan', 'bang_dong_lanh',
+  'ke_hang', 'nguoi_kiem_ke', 'nhan_vien', 'nhan_vien_ngo', 'thung_carton', 'tu_mat', 'quay_thu_ngan', 'bang_dong_lanh',
   'may_cham_cong', 'xe_day', 'hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua',
   'ke_mat', 'tu_dong', 'hh_kem', 'hh_goi_dong', 'hh_sua_chua',
 ] as const;
@@ -35,6 +35,7 @@ interface Part {
 export class ModelLib {
   private models = new Map<ModelName, Loaded>();
   private partsCache = new Map<ModelName, Part[]>();
+  private proxyCache = new Map<ModelName, { geo: THREE.BufferGeometry; mat: THREE.Material }>();
 
   has(name: ModelName): boolean {
     return this.models.has(name);
@@ -86,6 +87,37 @@ export class ModelLib {
       im.userData.local = p.local;
       g.add(im);
     }
+    return g;
+  }
+
+  /**
+   * Như instanced() nhưng mỗi món chỉ là một khối hộp cùng kích thước, màu của phần lớn nhất model
+   * (12 tam giác, 1 lệnh vẽ). Dùng cho hàng hoá ở mức đồ hoạ Thấp.
+   */
+  instancedProxy(name: ModelName, matrices: THREE.Matrix4[]): THREE.Group | null {
+    const m = this.models.get(name);
+    const parts = this.parts(name);
+    if (!m || !parts || !matrices.length) return null;
+    let proxy = this.proxyCache.get(name);
+    if (!proxy) {
+      const bb = new THREE.Box3().setFromObject(m.scene);
+      const size = bb.getSize(new THREE.Vector3());
+      const c = bb.getCenter(new THREE.Vector3());
+      const geo = new THREE.BoxGeometry(size.x, size.y, size.z).translate(c.x, c.y, c.z);
+      const tris = (p: Part) => (p.geometry.index ? p.geometry.index.count : p.geometry.attributes.position.count) / 3;
+      const main = parts.reduce((a, b) => (tris(b) > tris(a) ? b : a));
+      const col = (main.material as THREE.MeshLambertMaterial).color?.clone() ?? new THREE.Color(0x999999);
+      proxy = { geo, mat: new THREE.MeshLambertMaterial({ color: col }) };
+      this.proxyCache.set(name, proxy);
+    }
+    const im = new THREE.InstancedMesh(proxy.geo, proxy.mat, matrices.length);
+    matrices.forEach((mm, i) => im.setMatrixAt(i, mm));
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = false;
+    im.receiveShadow = true;
+    im.userData.local = new THREE.Matrix4();
+    const g = new THREE.Group();
+    g.add(im);
     return g;
   }
 

@@ -1,9 +1,21 @@
 // Kiểm tra nhanh logic game, không cần trình duyệt: npm run sim:test
-import { Game, type Evaluation } from '../src/sim/game.ts';
-import { Auditor, ROUTE, beamReach, pathClear, planPath, hasLOS, tuningForNight } from '../src/sim/auditor.ts';
+import { Game, LATE_IN_PENALTY, type Evaluation, type GameOptions } from '../src/sim/game.ts';
+import {
+  Auditor, ROUTE_STYLES, beamReach, buildRoute, navStats, pathClear, planPath, hasLOS, tuningForNight,
+} from '../src/sim/auditor.ts';
 import { mulberry32 } from '../src/sim/rng.ts';
-import { AUDITOR_DOOR, AUDITOR_SPAWN, COLD_UNITS, SECTIONS, SHELVES, storageSlot } from '../src/sim/layout.ts';
+import {
+  AUDITOR_DOOR, AUDITOR_SPAWN, CLOCK_ZONE, COLD_UNITS, PLAYER_SPAWN, ROOMS, SECTIONS, SHELVES, STORE, inSafeRoom, roomAt, storageSlot,
+  storageStand,
+} from '../src/sim/layout.ts';
+import type { V2 } from '../src/sim/geometry.ts';
 import { dist } from '../src/sim/geometry.ts';
+
+/** Game để thử các việc: bỏ bước chấm công vào ca (có bài kiểm tra riêng cho chấm công). */
+function mkGame(name: string, opts: GameOptions | number = {}): Game {
+  const o: GameOptions = typeof opts === 'number' ? { seed: opts } : opts;
+  return new Game(name, { ...o, events: { clockInRequired: false, ...o.events } });
+}
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -11,42 +23,81 @@ function check(name: string, ok: boolean, detail = ''): void {
   if (!ok) failed++;
 }
 
-// 1. Lộ trình tuần tra đi được
-let routeOk = pathClear(AUDITOR_SPAWN, AUDITOR_DOOR);
-for (let i = 0; i + 1 < ROUTE.length; i++) routeOk &&= pathClear(ROUTE[i], ROUTE[i + 1]);
-check('Lộ trình tuần tra không xuyên vật cản', routeOk);
-check('Có 24 đoạn kệ (6 dãy)', SECTIONS.length === 24, String(SECTIONS.length));
+// 1. Lộ trình tuần tra: mỗi kiểu đều đi tới được mọi điểm, không xuyên tường
+/** Đi theo đường planPath từ a tới b: mọi đoạn đều đi thẳng được và tới đúng nơi. */
+const walk = (a: V2, b: V2): boolean => {
+  const path = planPath(a, b);
+  let cur = a;
+  for (const q of path) {
+    if (!pathClear(cur, q)) return false;
+    cur = q;
+  }
+  return dist(cur, b) < 0.05;
+};
+for (const style of ROUTE_STYLES) {
+  const r = buildRoute(style, mulberry32(5));
+  let ok = r.length >= 6;
+  for (let i = 0; i < r.length; i++) ok &&= walk(r[i], r[(i + 1) % r.length]);
+  check(`Lộ trình "${style}" đi được (${r.length} điểm)`, ok);
+}
+check('Hai lần dựng cùng kiểu cho thứ tự khác nhau',
+  JSON.stringify(buildRoute('ngau_nhien', mulberry32(1))) !== JSON.stringify(buildRoute('ngau_nhien', mulberry32(2))));
+// Ra khỏi phòng riêng (PHÒNG KIỂM KÊ) qua đúng cửa phòng
+{
+  const office = ROOMS.find((r) => r.name === 'PHÒNG KIỂM KÊ')!;
+  const path = planPath(AUDITOR_SPAWN, AUDITOR_DOOR);
+  check('Xuất phát trong phòng kiểm kê (tách khỏi văn phòng)', AUDITOR_SPAWN.x > office.box.minX && AUDITOR_SPAWN.z < STORE.backZ);
+  check('Từ phòng kiểm kê ra cửa không xuyên tường', walk(AUDITOR_SPAWN, AUDITOR_DOOR), `${path.length} điểm`);
+  const cross = [AUDITOR_SPAWN, ...path].findIndex((q, i, arr) => i > 0 && arr[i - 1].z < STORE.backZ && q.z >= STORE.backZ);
+  const pts = [AUDITOR_SPAWN, ...path];
+  // Điểm ngay trước và sau vách z = 7 nằm thẳng ô cửa
+  const a = pts[cross - 1];
+  const b = pts[cross];
+  const xAt = a.x + ((b.x - a.x) * (STORE.backZ - a.z)) / (b.z - a.z);
+  check('Đi qua đúng ô cửa phòng kiểm kê', cross > 0 && Math.abs(xAt - office.door.x) < office.doorW / 2, xAt.toFixed(2));
+}
+// Vác thùng về kho từ mọi nơi (khu bán hàng, kho lạnh, phòng nghỉ, văn phòng) đều qua cửa, không xuyên tường
+for (const from of [{ x: 36, z: 22.75 }, { x: 14.5, z: 4 }, { x: 25, z: 4.5 }, { x: 40, z: 3.5 }, { x: 2.3, z: 31 }, { x: 33, z: 4 }]) {
+  check(`Vác thùng từ (${from.x}, ${from.z}) về kho không xuyên tường`, walk(from, storageStand(1)));
+}
+check('Có 48 đoạn kệ (12 dãy, 2 khối)', SECTIONS.length === 48, String(SECTIONS.length));
+{
+  const ns = navStats();
+  check('Lưới đường đi liền một vùng', ns.components === 1, `${ns.nodes} điểm, ${ns.components} vùng`);
+}
 
 // 2. Tìm đường tới các điểm khó: giữa hai dãy kệ, góc quầy, làn tây, khu hàng lạnh giữa hai đảo tủ đông,
 //    sau đảo tủ đông, sát ngăn mát tường đông, cửa kho lạnh
 const lane = (i: number) => (SHELVES[i].box.maxZ + SHELVES[i + 1].box.minZ) / 2;
 const targets = [
-  { x: 12, z: lane(2) }, { x: 28.5, z: 27.2 }, { x: 3, z: 24 }, { x: 30, z: 16 },
-  { x: 30, z: 20.4 }, { x: 34.2, z: 15 }, { x: 16.5, z: 8.2 },
+  { x: 10, z: lane(2) }, { x: 39.5, z: 30.9 }, { x: 2.3, z: 24 }, { x: 36, z: 16.25 },
+  { x: 36, z: 22.75 }, { x: 42.2, z: 15 }, { x: 14.5, z: 8.2 }, { x: 22, z: 31.0 }, { x: 15.25, z: 33.2 },
 ];
 for (const t of targets) {
-  const p = planPath({ x: 3, z: 8.6 }, t);
+  const p = planPath({ x: 2.3, z: 8.4 }, t);
   const end = p[p.length - 1];
   check(`Tìm đường tới (${t.x}, ${t.z.toFixed(1)})`, p.length > 0 && dist(end, t) < 1.5, `${p.length} điểm`);
 }
 
 // 3. Kệ che tầm nhìn
 check('Kệ che tầm nhìn giữa hai làn', !hasLOS({ x: 12, z: lane(0) }, { x: 12, z: lane(1) }));
-check('Cùng làn thì nhìn thấy', hasLOS({ x: 3, z: lane(0) }, { x: 20, z: lane(0) }));
+check('Cùng làn thì nhìn thấy', hasLOS({ x: 3, z: lane(0) }, { x: 14.5, z: lane(0) }));
+check('Hai khối kệ lệch nhau: làn khối tây không nhìn thông sang khối giữa', !hasLOS({ x: 3, z: lane(0) }, { x: 26, z: lane(0) }));
+check('Pallet che đường nhìn dọc làn ngang', !hasLOS({ x: 3, z: 19.5 }, { x: 14, z: 19.5 }));
 {
   const r = beamReach({ x: 12, z: lane(0) }, Math.PI, 9); // chĩa về phía bắc, gặp mặt nam của dãy 1
   const want = lane(0) - SHELVES[0].box.maxZ;
   check('Tia quét dừng ở mặt kệ', Math.abs(r - want) < 0.05, `${r.toFixed(2)} / ${want.toFixed(2)}`);
   check('Tia quét dọc làn đi hết tầm', beamReach({ x: 3, z: lane(0) }, Math.PI / 2, 9) === 9);
 }
-check('Tủ đông nằm thấp: không che tầm nhìn', hasLOS({ x: 30, z: 11.75 }, { x: 30, z: 14.75 }));
-check('Ngăn mát mở cao: che tầm nhìn', !hasLOS({ x: 34.2, z: 15 }, { x: 36.5, z: 15 }));
-check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 18 + 12 + 6);
+check('Tủ đông nằm thấp: không che tầm nhìn', hasLOS({ x: 35.9, z: 11.8 }, { x: 35.9, z: 14.2 }));
+check('Ngăn mát mở cao: che tầm nhìn', !hasLOS({ x: 42.2, z: 15 }, { x: 43.95, z: 15 }));
+check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 18 + 15 + 9);
 
 // 4. Một ca: Người Kiểm Kê xuất hiện, đi tuần, không ai ở trong tầm thì không bị bắt
 {
-  const g = new Game('Thử', 42);
-  g.player.pos = { x: 21.5, z: 23.2 };
+  const g = mkGame('Thử', 42);
+  g.player.pos = { x: 6, z: 4.5 };
   let moved = 0;
   let last = { ...g.auditor.pos };
   for (let i = 0; i < 60 * 60; i++) {
@@ -61,15 +112,15 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 5. Nghe tiếng động và đi điều tra
 {
-  const g = new Game('Thử', 7);
-  g.player.pos = { x: 22.5, z: 23.4 };
+  const g = mkGame('Thử', 7);
+  g.player.pos = { x: 6, z: 4.5 };
   for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60); // đợi nó ra khỏi kho
   const before = g.auditor.state;
   g.noise({ x: g.auditor.pos.x + 4, z: g.auditor.pos.z }, 10, 2);
   check('Nghe tiếng động gần', g.auditor.state === 'alert', `${before} → ${g.auditor.state}`);
   for (let i = 0; i < 60 * 2; i++) g.tick(1 / 60);
   check('Chuyển sang đi điều tra', ['investigate', 'search', 'count'].includes(g.auditor.state), g.auditor.state);
-  const far = new Game('Thử', 8);
+  const far = mkGame('Thử', 8);
   for (let i = 0; i < 60 * 12; i++) far.tick(1 / 60);
   far.noise({ x: 23, z: 23.5 }, 2, 0.5);
   check('Không nghe tiếng thì thầm ở xa', far.auditor.state !== 'alert', far.auditor.state);
@@ -77,7 +128,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 6. Đứng trước tia quét thì bị đếm và đóng thùng
 {
-  const g = new Game('Thử', 3);
+  const g = mkGame('Thử', 3);
   for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
   const a = g.auditor;
   g.player.pos = { x: a.pos.x + Math.sin(a.beam) * 2, z: a.pos.z + Math.cos(a.beam) * 2 };
@@ -93,7 +144,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 7. Chỉ tiêu: việc an toàn chỉ tính nửa
 {
-  const g = new Game('Thử', 1);
+  const g = mkGame('Thử', 1);
   g.shift.minutes = 60;
   g.freezer();
   g.shift.minutes = 180;
@@ -115,7 +166,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 8. Hết ca: thiếu chỉ tiêu và vắng điểm danh thì bị 2 lỗ
 {
-  const g = new Game('Thử', 5);
+  const g = mkGame('Thử', 5);
   g.player.pos = { x: 3, z: 3 }; // đứng trong kho, kiểm kê viên không vào kho
   g.shift.minutes = 479.9;
   g.tick(0.2);
@@ -126,8 +177,8 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 6. Mất điện: nghe tiếng động thì CHẠY tới; ánh đèn pin trong tầm mắt làm nó chú ý
 {
-  const g = new Game('Thử', 7);
-  g.player.pos = { x: 22.5, z: 23.4 };
+  const g = mkGame('Thử', 7);
+  g.player.pos = { x: 6, z: 4.5 };
   check('Đêm 1 không mất điện', g.blackout === null);
   for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
   g.events.length = 0;
@@ -153,12 +204,12 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   const mk = () => {
     const a = new Auditor(tuningForNight(2), mulberry32(3));
     a.state = 'search';
-    a.pos = { x: 3, z: 11.1 };
+    a.pos = { x: 2.3, z: 12.5 };
     a.heading = Math.PI / 2 - 1.0; // người chơi lệch 1 rad: ngoài tia quét, trong tầm mắt
     a.blackout = true;
     return a;
   };
-  const target = { x: 10, z: 11.1 };
+  const target = { x: 9.3, z: 12.5 };
   const lit = mk();
   lit.update(1 / 60, target, true, true);
   check('Thấy ánh đèn pin thì chú ý', lit.state === 'alert' && lit.events.some((e) => e.type === 'light'), lit.state);
@@ -173,19 +224,47 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 9. Bảng sự kiện: điều khiển tay
 {
-  const g = new Game('Thử', { seed: 11, events: { auditorStart: 0 } });
+  const g = mkGame('Thử', { seed: 11, events: { auditorStart: 0 } });
   g.tick(1 / 60);
   check('Lịch: Người Kiểm Kê vào lúc 22:00', g.auditor.state !== 'idle', g.auditor.state);
   g.devAuditorRest();
   check('Cho về kho nghỉ', g.auditor.state === 'idle');
   for (let i = 0; i < 60; i++) g.tick(1 / 60);
   check('Về nghỉ thì không tự vào lại theo lịch', g.auditor.state === 'idle');
-  g.devLure({ x: 10, z: 11.1 });
+  g.devLure({ x: 9, z: 12.5 });
   check('Dụ tới: gọi vào và nghe thấy', g.auditor.state === 'alert', g.auditor.state);
 
-  const n1 = new Game('Thử', 12);
+  const n1 = mkGame('Thử', 12);
   check('Đêm 1 mặc định không mất điện', n1.blackout === null);
-  const n1b = new Game('Thử', { seed: 12, events: { blackoutFromNight: 1, blackoutMinutes: 40 } });
+  // Mất điện nhiều lần: đêm 2 một lần, đêm 3 hai lần, đêm 4 ba lần; không chồng nhau, cách nhau >= 40 phút
+  {
+    const g = mkGame('Thử', 21);
+    const counts: number[] = [];
+    let spaced = true;
+    for (let n = 2; n <= 5; n++) {
+      g.devGoNight(n);
+      counts.push(g.blackouts.length);
+      for (let i = 1; i < g.blackouts.length; i++) spaced &&= g.blackouts[i].start - g.blackouts[i - 1].end >= 40;
+    }
+    check('Số lần mất điện tăng theo đêm (2→5)', counts.join(',') === '1,2,3,3', counts.join(','));
+    check('Các lần mất điện cách nhau ít nhất 40 phút', spaced);
+    g.devGoNight(4);
+    let offs = 0;
+    g.events.length = 0;
+    for (let t = 0; t < 480; t += 2) {
+      g.shift.minutes = t;
+      g.tick(1 / 60);
+    }
+    offs = g.events.filter((e) => e.type === 'power' && !e.on).length;
+    check('Đêm 4 mất điện 3 lần trong ca', offs === 3, String(offs));
+    const styles = new Set<string>();
+    for (let n = 1; n <= 5; n++) {
+      g.devGoNight(n);
+      styles.add(g.auditor.routeStyle);
+    }
+    check('Mỗi đêm Người Kiểm Kê đi một kiểu lộ trình khác', styles.size === 5, [...styles].join(','));
+  }
+  const n1b = mkGame('Thử', { seed: 12, events: { blackoutFromNight: 1, blackoutMinutes: 40 } });
   check('Lịch: mất điện từ đêm 1', !!n1b.blackout && n1b.blackout.end - n1b.blackout.start === 40);
   n1b.setEventConfig({ blackoutAuto: false });
   check('Tắt tự mất điện thì bỏ lịch đêm này', n1b.blackout === null);
@@ -214,7 +293,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Khôi phục thông số mặc định', n1.auditor.tune.range === tuningForNight(n1.night).range);
 
   // Không chết + tàng hình
-  const nd = new Game('Thử', 3);
+  const nd = mkGame('Thử', 3);
   for (let i = 0; i < 60 * 12; i++) nd.tick(1 / 60);
   nd.dev.noDeath = true;
   const a = nd.auditor;
@@ -226,7 +305,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
     nd.events.length = 0;
   }
   check('Không chết: bị đếm đủ vẫn sống', nd.phase === 'shift' && spared, nd.phase);
-  const inv = new Game('Thử', 3);
+  const inv = mkGame('Thử', 3);
   for (let i = 0; i < 60 * 12; i++) inv.tick(1 / 60);
   inv.dev.invisible = true;
   const b = inv.auditor;
@@ -237,10 +316,13 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 10. Cảnh đóng thùng: lao tới → nhét vào thùng → bê về kho → đặt xuống → đi tuần tiếp
 {
-  const g = new Game('Lan', 3);
+  const g = mkGame('Lan', 3);
   for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
   const a = g.auditor;
-  // Đứng xa 4 m trước tia quét để thấy nó lao tới
+  // Đặt nó đứng ở làn giữa dãy 1 và 2, nhìn về phía đông; người chơi đứng xa 4 m trước tia quét
+  a.pos = { x: 2.3, z: 12.5 };
+  a.heading = a.beam = Math.PI / 2;
+  a.state = 'search';
   g.player.pos = { x: a.pos.x + Math.sin(a.beam) * 4, z: a.pos.z + Math.cos(a.beam) * 4 };
   const caughtAt = { ...g.player.pos };
   const seen: string[] = [];
@@ -281,7 +363,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 // 11. Phiếu việc: đủ chỉ tiêu rồi ngồi chờ thì vẫn bị phạt
 {
   // Ngồi yên cả ca trong kho (kiểm kê viên không vào kho), chỉ tiêu được cộng cho đủ
-  const g = new Game('Thử', { seed: 21, events: { auditorStart: 999 } });
+  const g = mkGame('Thử', { seed: 21, events: { auditorStart: 999 } });
   g.player.pos = { x: 3, z: 3 };
   g.devAddCong(g.shift.quota);
   let issued = 0;
@@ -306,7 +388,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 }
 {
   // Làm phiếu đúng hạn
-  const g = new Game('Thử', { seed: 22, events: { ordersBase: 0, ordersPerNight: 0 } });
+  const g = mkGame('Thử', { seed: 22, events: { ordersBase: 0, ordersPerNight: 0 } });
   const r = g.issueOrder('restock')!;
   check('Phiếu xếp hàng: kệ thành thiếu hàng, thêm thùng', g.shift.restockNeeded.has(r.section!) && g.shift.pile === g.shift.restockTotal + 1 - 0);
   g.shift.drift = 0.3;
@@ -324,7 +406,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 }
 {
   // Phiếu khen: vượt 150% chỉ tiêu, xoá lỗ đêm sau
-  const g = new Game('Thử', { seed: 23, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  const g = mkGame('Thử', { seed: 23, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
   g.player.pos = { x: 3.5, z: 1.2 }; // ở máy chấm công
   g.devAddCong(9);
   g.shift.minutes = 479.9;
@@ -343,7 +425,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 // 12. Ném lon thì phải nhặt lại, không sẽ bị trừ công
 {
   const mk = () => {
-    const g = new Game('Thử', { seed: 31, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+    const g = mkGame('Thử', { seed: 31, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
     g.player.pos = { x: 3.5, z: 1.2 }; // đứng ở máy chấm công
     g.devAddCong(g.shift.quota); // vừa đủ chỉ tiêu
     return g;
@@ -379,7 +461,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
 // 13. Xếp hàng vào tủ lạnh: thùng hàng lạnh lấy ở kho lạnh
 {
-  const g = new Game('Thử', { seed: 41, events: { ordersBase: 0, ordersPerNight: 0 } });
+  const g = mkGame('Thử', { seed: 41, events: { ordersBase: 0, ordersPerNight: 0 } });
   const s = g.shift;
   check('Đêm 1: 2 tủ lạnh hết hàng, 3 thùng hàng lạnh', s.coldNeeded.size === 2 && s.coldPile === 3, `${s.coldNeeded.size}, ${s.coldPile}`);
   const [unit] = [...s.coldNeeded];
@@ -402,6 +484,68 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   g.takeColdBox();
   g.restockCold(o.section!);
   check('Xếp xong thì phiếu xong', o.done && !o.late);
+}
+
+// 14. Khu lấy hàng: trong kho / kho lạnh không bị nhìn thấy, không bị đếm; nghe tiếng thì chỉ tới cửa ngó vào
+{
+  const kho = ROOMS.find((r) => r.name === 'KHO')!;
+  const inside = { x: kho.door.x, z: 5.5 };
+  check('Trong kho là khu an toàn', inSafeRoom(inside) && inSafeRoom({ x: 14.5, z: 3 }) && !inSafeRoom({ x: 25, z: 3 }));
+  const a = new Auditor(tuningForNight(3), mulberry32(4));
+  a.state = 'search';
+  a.pos = { x: kho.door.x, z: 8.6 };
+  a.heading = a.beam = Math.PI; // đứng ở cửa kho nhìn thẳng vào trong
+  for (let i = 0; i < 60 * 3; i++) a.update(1 / 60, inside, true);
+  check('Đứng trong kho: nhìn thẳng vào vẫn không đếm được', (a.state as string) !== 'count' && !a.capturing, a.state);
+  const b = new Auditor(tuningForNight(3), mulberry32(4));
+  b.state = 'search';
+  b.pos = { x: kho.door.x, z: 10.0 };
+  b.heading = b.beam = Math.PI;
+  b.update(1 / 60, { x: kho.door.x, z: 7.9 }, true); // đứng ngoài cửa kho: bị thấy
+  check('Ra khỏi kho thì bị thấy', (b.state as string) === 'count', b.state);
+  const c = new Auditor(tuningForNight(3), mulberry32(4));
+  c.state = 'search';
+  c.pos = { x: 20, z: 9 };
+  const s = c.hear({ x: 4, z: 3 }, 1000, 0.5);
+  check('Nghe tiếng trong kho: chỉ tới trước cửa kho', !!s && !roomAt(s) && Math.abs(s.x - kho.door.x) < 0.01, s ? `${s.x}, ${s.z}` : '');
+}
+
+// 15. Đầu đêm: bắt đầu ở phòng nghỉ, phải chạy tới máy chấm công trong kho để vào ca
+{
+  check('Bắt đầu đêm trong PHÒNG NGHỈ', roomAt(PLAYER_SPAWN)?.name === 'PHÒNG NGHỈ');
+  check('Người Kiểm Kê có phòng riêng, khác văn phòng', roomAt(AUDITOR_SPAWN)?.name === 'PHÒNG KIỂM KÊ');
+  const g = new Game('Thử', 31);
+  const sec = SECTIONS.find((x) => !g.shift.restockNeeded.has(x.id))!;
+  check('Chưa chấm công thì chưa làm việc được', !g.scanSection(sec.id).ok);
+  g.tick(1 / 60);
+  g.player.pos = { x: (CLOCK_ZONE.minX + CLOCK_ZONE.maxX) / 2, z: 1.2 };
+  g.events.length = 0;
+  g.tick(1 / 60);
+  check('Tới máy chấm công thì vào ca', g.player.clockedIn && g.events.some((e) => e.type === 'clockIn' && !e.late));
+  check('Vào ca rồi thì làm việc được', g.scanSection(sec.id).ok);
+  // Đi trễ
+  const late = new Game('Thử', 32);
+  late.player.pos = { ...PLAYER_SPAWN };
+  late.shift.minutes = late.eventCfg.clockInBy + 5;
+  late.tick(1 / 60);
+  late.player.pos = { x: 3.5, z: 1.2 };
+  late.tick(1 / 60);
+  check('Chấm công sau hạn: ghi nhận trễ', late.player.clockedIn && late.player.lateIn);
+  late.devAddCong(late.shift.quota + LATE_IN_PENALTY);
+  late.shift.minutes = 479.9;
+  late.tick(0.2);
+  const ev = late.events.find((e) => e.type === 'eval');
+  check(`Chấm công trễ: trừ ${LATE_IN_PENALTY} công lúc 06:00`, !!ev && ev.type === 'eval' && ev.ev.lateInPenalty === LATE_IN_PENALTY && ev.ev.cong === late.shift.cong - LATE_IN_PENALTY);
+  // Chạy kịp: từ phòng nghỉ tới máy chấm công
+  const run = planPath(PLAYER_SPAWN, { x: 3.5, z: 1.2 });
+  let len = 0;
+  let cur: V2 = PLAYER_SPAWN;
+  for (const q of run) {
+    len += dist(cur, q);
+    cur = q;
+  }
+  const secs = len / 3.8;
+  check('Chạy từ phòng nghỉ tới máy chấm công kịp hạn', secs < late.eventCfg.clockInBy * 0.5625, `${len.toFixed(1)} m · ${secs.toFixed(1)} giây chạy`);
 }
 
 console.log(failed ? `\n${failed} kiểm tra thất bại.` : '\nTất cả kiểm tra đều đạt.');

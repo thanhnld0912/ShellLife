@@ -59,6 +59,7 @@ export class PlayerController {
     this.flash.shadow.camera.near = 0.2;
     this.flash.shadow.camera.far = 22;
     this.flash.shadow.bias = -0.002;
+    this.flash.shadow.autoUpdate = false; // đèn tắt thì khỏi vẽ bản đồ bóng (đỡ vẽ cả cảnh thêm một lần mỗi khung hình)
     camera.add(this.flash, this.flash.target);
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -87,6 +88,12 @@ export class PlayerController {
   setFlashlight(on: boolean): void {
     this.flashOn = on;
     this.flash.intensity = on ? this.flashPower : 0;
+    this.flash.shadow.autoUpdate = on;
+  }
+
+  /** Bật / tắt bóng đổ của đèn pin (mức đồ hoạ). Gọi trước khung hình đầu tiên để khỏi phải dựng lại vật liệu. */
+  setShadows(on: boolean): void {
+    this.flash.castShadow = on;
   }
 
   /** true / 'dry' = thùng hàng khô, 'cold' = thùng hàng lạnh, false = tay không. */

@@ -7,8 +7,9 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { Game, orderText, type Evaluation } from './sim/game.ts';
 import { clockOf } from './sim/shift.ts';
 import {
-  CLOCK_ZONE, COUNTER, PLAYER_SPAWN, SOLIDS, STORE, coldUnitById, sectionAt, type ColdUnit, type Section,
+  CLOCK_ZONE, COUNTER, PLAYER_SPAWN, PLAYER_SPAWN_YAW, SOLIDS, coldUnitById, inSafeRoom, sectionAt, type ColdUnit, type Section,
 } from './sim/layout.ts';
+import { ThrowAim } from './client/throwAim.ts';
 import { inBox, inflate, type V2 } from './sim/geometry.ts';
 import { hasLOS } from './sim/auditor.ts';
 import { buildWorld, type World } from './render/world.ts';
@@ -20,12 +21,14 @@ import { Hud } from './client/hud.ts';
 import { MouseLook } from './client/mouseLook.ts';
 import { DevPanel, applyDevSaved, type DevHost } from './client/devPanel.ts';
 import { loadModels, type ModelLib } from './render/models.ts';
+import {
+  QUALITY, ResolutionGovernor, detectQuality, loadQualityChoice, resolveQuality, saveQualityChoice, type QualityChoice,
+} from './render/quality.ts';
 
 type Mode = 'menu' | 'play' | 'eval' | 'dying' | 'spectate' | 'final';
 
 // ---- Khởi tạo three.js ----
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
@@ -41,11 +44,43 @@ const player = new PlayerController(camera);
 const audio = new GameAudio();
 const hud = new Hud();
 
+// ---- Mức đồ hoạ (chọn ở menu, áp dụng khi nhận ca) ----
+let qualityChoice: QualityChoice = loadQualityChoice();
+let quality = resolveQuality(qualityChoice, renderer);
+const governor = new ResolutionGovernor(renderer, QUALITY[quality]);
+function applyQuality(): void {
+  const q = QUALITY[quality];
+  governor.setQuality(q);
+  renderer.shadowMap.enabled = q.shadows;
+  player.setShadows(q.shadows);
+  camera.far = q.far + 4;
+  camera.updateProjectionMatrix();
+}
+applyQuality();
+{
+  const sel = document.getElementById('quality') as HTMLSelectElement;
+  const info = document.getElementById('quality-info')!;
+  const show = () => {
+    info.textContent = qualityChoice === 'auto' ? `máy này: ${QUALITY[detectQuality(renderer)].label}` : '';
+  };
+  sel.value = qualityChoice;
+  show();
+  sel.addEventListener('change', () => {
+    if (mode !== 'menu') return;
+    qualityChoice = sel.value as QualityChoice;
+    saveQualityChoice(qualityChoice);
+    quality = resolveQuality(qualityChoice, renderer);
+    applyQuality();
+    show();
+  });
+}
+
 let mode: Mode = 'menu';
 let game: Game | null = null;
 let world: World | null = null;
 let auditorView: AuditorView | null = null;
 let captureView: CaptureView | null = null;
+let throwAim: ThrowAim | null = null;
 let deathStage: 'lunge' | 'cine' | 'black' | null = null;
 let deathT = 0;
 /** Góc máy cảnh đóng thùng. */
@@ -65,12 +100,14 @@ let flashTipShown = false;
 let dyingName = '';
 
 const SPEC_CAMS: { pos: [number, number, number]; look: [number, number, number]; name: string }[] = [
-  { pos: [1.8, 3.1, 8.0], look: [16, 0.6, 20], name: 'CAMERA 1 · GÓC TÂY BẮC' },
-  { pos: [23.4, 3.1, 8.0], look: [12, 0.6, 20], name: 'CAMERA 2 · BẮC GIỮA' },
-  { pos: [34.6, 3.1, 8.0], look: [28, 0.6, 20], name: 'CAMERA 3 · KHU HÀNG LẠNH' },
-  { pos: [1.8, 3.1, 29.2], look: [16, 0.6, 16], name: 'CAMERA 4 · MẶT KÍNH TÂY' },
-  { pos: [34.6, 3.1, 29.2], look: [22, 0.6, 16], name: 'CAMERA 5 · QUẦY' },
-  { pos: [13.5, 3.0, 6.2], look: [7, 0.4, 1.5], name: 'CAMERA 6 · KHO' },
+  { pos: [1.8, 3.1, 8.0], look: [14, 0.6, 20], name: 'CAMERA 1 · GÓC TÂY BẮC' },
+  { pos: [15.25, 3.1, 7.8], look: [15.25, 0.6, 24], name: 'CAMERA 2 · LỐI GIỮA HAI KHỐI KỆ' },
+  { pos: [43.2, 3.1, 8.2], look: [34, 0.6, 20], name: 'CAMERA 3 · KHU HÀNG LẠNH' },
+  { pos: [1.8, 3.1, 33.2], look: [14, 0.6, 22], name: 'CAMERA 4 · MẶT KÍNH TÂY' },
+  { pos: [43.2, 3.1, 33.2], look: [30, 0.6, 24], name: 'CAMERA 5 · QUẦY' },
+  { pos: [11.5, 3.0, 6.2], look: [5, 0.4, 1.5], name: 'CAMERA 6 · KHO' },
+  { pos: [43.5, 3.0, 9.8], look: [12, 0.6, 7.6], name: 'CAMERA 7 · HÀNH LANG CỬA PHÒNG' },
+  { pos: [37.0, 2.9, 6.4], look: [41, 1.0, 1.8], name: 'CAMERA 8 · PHÒNG KIỂM KÊ' },
 ];
 /** Camera kho: mở đầu chế độ xem sau khi chết (thấy thùng mang tên mình). */
 const KHO_CAM = 5;
@@ -108,9 +145,10 @@ startBtn.addEventListener('click', () => {
   if (!models) return;
   const name = (nameInput.value.trim() || 'Minh').slice(0, 14);
   game = new Game(name, { events: dev.saved.events, tuning: dev.saved.tuning });
-  world = buildWorld(name, models);
+  world = buildWorld(name, models, QUALITY[quality]);
   world.scene.add(camera);
-  auditorView = new AuditorView(world.scene, models);
+  auditorView = new AuditorView(world.scene, models, QUALITY[quality].shadows);
+  throwAim = new ThrowAim(world.scene, camera);
   captureView = new CaptureView(world.scene, models);
   captureView.onLand = () => {
     const at = game?.auditor.capture?.at;
@@ -123,7 +161,7 @@ startBtn.addEventListener('click', () => {
   applyDevSaved(dev.saved, player, world);
   dev.clearLog();
   world.resetNight(game.shift, game.night);
-  player.teleport(PLAYER_SPAWN);
+  player.teleport(PLAYER_SPAWN, PLAYER_SPAWN_YAW);
   player.setCarrying(false);
   player.onNoise = (at, r, e) => game?.noise(at, r, e);
   audio.start();
@@ -140,6 +178,7 @@ document.getElementById('pause')!.addEventListener('click', (e) => {
 });
 controls.addEventListener('lock', () => hud.show('pause', false));
 controls.addEventListener('unlock', () => {
+  throwAim?.cancel();
   if (mode === 'play' && !dev.isOpen) hud.show('pause', true);
 });
 
@@ -196,7 +235,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (mode !== 'play' || !controls.isLocked || !game || !world || e.repeat) return;
   if (e.code === 'KeyE') interact();
-  if (e.code === 'KeyQ') throwCan();
+  if (e.code === 'KeyQ') startAim();
   if (e.code === 'KeyT') toggleFlash();
   if (e.code === 'KeyG') dropBox();
   if (e.code === 'F6' && debug) {
@@ -204,6 +243,37 @@ window.addEventListener('keydown', (e) => {
     game.forceBlackout();
   }
 });
+
+// ---- Ném lon: giữ Q để ngắm (tay, đường bay, chỗ rơi), thả Q để ném, chuột phải để huỷ ----
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'KeyQ') releaseAim();
+});
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 2 && throwAim?.aiming) throwAim.cancel();
+});
+window.addEventListener('contextmenu', (e) => {
+  if (mode === 'play') e.preventDefault();
+});
+
+function startAim(): void {
+  if (!game || !throwAim) return;
+  throwAim.start(canCooldown <= 0);
+  if (canCooldown > 0) hud.toast(`Đang lấy lon mới · còn ${Math.ceil(canCooldown)} giây`, false);
+}
+
+function releaseAim(): void {
+  if (!game || !world || !throwAim?.aiming) return;
+  const r = throwAim.release(() => {
+    if (!game || !world || mode !== 'play' || !r) return;
+    const id = game.dropLitter(r.land);
+    world.addCan(r.land.x, r.land.z, id);
+    audio.clank(p3(r.land, 0.1));
+  });
+  if (!r) return;
+  canCooldown = 6;
+  audio.click(p3(player.pos, 1.4), 0.25, 700); // tiếng vung tay
+  hud.toast('Đã ném một lon nước. Nhớ nhặt lại: 06:00 mỗi lon còn trên sàn bị trừ 1 công.', true);
+}
 
 function toggleFlash(): void {
   if (!game) return;
@@ -328,28 +398,6 @@ function interact(): void {
       );
     } else hud.toast(r.msg, false);
   }
-}
-
-function throwCan(): void {
-  if (!game || !world || canCooldown > 0) return;
-  canCooldown = 6;
-  raycaster.setFromCamera(CENTER, camera);
-  raycaster.far = 12;
-  const hit = raycaster.intersectObjects(world.raySolids, false)[0];
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  const land: V2 = hit
-    ? { x: hit.point.x - dir.x * 0.3, z: hit.point.z - dir.z * 0.3 }
-    : { x: camera.position.x + dir.x * 8, z: camera.position.z + dir.z * 8 };
-  land.x = Math.max(0.4, Math.min(STORE.w - 0.4, land.x));
-  land.z = Math.max(0.4, Math.min(STORE.d - 0.4, land.z));
-  hud.toast('Đã ném một lon nước. Nhớ nhặt lại: 06:00 mỗi lon còn trên sàn bị trừ 1 công.', true);
-  setTimeout(() => {
-    if (!game || !world || mode !== 'play') return;
-    const id = game.dropLitter(land);
-    world.addCan(land.x, land.z, id);
-    audio.clank(p3(land, 0.1));
-  }, 450);
 }
 
 function updateScan(dt: number, f: Focus): void {
@@ -490,6 +538,17 @@ function handleEvents(): void {
         world?.addStoredBox(e.name, e.slot);
         audio.clank(p3(e.slot, 0.2));
         break;
+      case 'clockIn':
+        dev.log(e.late ? 'Chấm công vào ca TRỄ' : 'Đã chấm công vào ca');
+        audio.click(p3(player.pos, 1.2), 0.7, 900);
+        setTimeout(() => audio.tone(e.late ? 330 : 1320, 0.12, 0.08), 120);
+        hud.toast(
+          e.late
+            ? `Chấm công vào ca TRỄ (${game.shift.clock()}) · 06:00 bị trừ 2 công`
+            : `Đã chấm công vào ca lúc ${game.shift.clock()} · bắt đầu làm việc`,
+          !e.late,
+        );
+        break;
       case 'night':
         dev.log(`Bắt đầu lại đêm ${game.night}`);
         resetNightView();
@@ -564,7 +623,8 @@ function resetNightView(): void {
   powerTarget = 1;
   flickerT = 0;
   world.resetNight(game.shift, game.night);
-  player.teleport(PLAYER_SPAWN);
+  player.teleport(PLAYER_SPAWN, PLAYER_SPAWN_YAW);
+  throwAim?.cancel();
   player.setCarrying(false);
   player.setFlashlight(false);
   game.player.light = false;
@@ -753,8 +813,10 @@ const p3 = (p: V2, y: number) => ({ x: p.x, y, z: p.z });
 
 let last = performance.now();
 function frame(now: number): void {
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const rawDt = (now - last) / 1000;
+  const dt = Math.min(0.05, rawDt);
   last = now;
+  if (mode !== 'menu') governor.frame(rawDt);
 
   if (game && world && auditorView) {
     // Thời gian của thế giới (Người Kiểm Kê, đồng hồ ca) có thể tua nhanh trong bảng sự kiện
@@ -765,8 +827,12 @@ function frame(now: number): void {
       game.reportMotion(dt, m.moving, m.running);
       const f = getFocus();
       updateScan(dt, f);
-      let hint = hintFor(f);
+      let hint = throwAim?.aiming ? 'Thả [Q] để ném lon tới vòng vàng · chuột phải: huỷ' : hintFor(f);
+      if (!hint && !game.player.clockedIn) {
+        hint = `Chấm công vào ca: tới MÁY CHẤM CÔNG trong KHO trước ${clockOf(game.eventCfg.clockInBy)}`;
+      }
       if (!hint && inBox(player.pos, CLOCK_ZONE)) hint = game.shift.minutes >= 420 ? 'MÁY CHẤM CÔNG · đứng đây tới 06:00 để điểm danh' : 'MÁY CHẤM CÔNG · 06:00 phải có mặt ở đây';
+      if (!hint && inSafeRoom(player.pos)) hint = 'KHU LẤY HÀNG · kiểm kê viên không kiểm đếm ở đây';
       if (!hint && !game.power) hint = `[T] ${player.flashOn ? 'Tắt' : 'Bật'} đèn pin`;
       if (player.carrying) hint += ' · [G] thả thùng để chạy';
       hud.hint(hint);
@@ -804,6 +870,7 @@ function frame(now: number): void {
     const frozen = mode === 'play' && !controls.isLocked && (!dev.isOpen || dev.pauses);
     auditorView.update(game.auditor, frozen ? 0 : wdt, debug, game.power);
     captureView?.update(game.auditor, frozen ? 0 : wdt);
+    throwAim?.update(frozen ? 0 : dt);
     world.update(dt);
     if (debug) {
       const a = game.auditor;
@@ -812,7 +879,8 @@ function frame(now: number): void {
           `[F6] bật/tắt mất điện để thử\nVị trí: ${a.pos.x.toFixed(1)}, ${a.pos.z.toFixed(1)}\n` +
           `Điểm nghi ngờ: ${a.suspicion ? `${a.suspicion.x.toFixed(1)}, ${a.suspicion.z.toFixed(1)}` : '—'}\n` +
           `Đếm: ${Math.round(a.countProgress * 100)}%\nNgười chơi: ${player.pos.x.toFixed(1)}, ${player.pos.z.toFixed(1)}\n` +
-          `Giọng tiếng Việt: ${audio.hasVietnameseVoice ? 'có' : 'không có (chỉ hiện chữ)'}`,
+          `Giọng tiếng Việt: ${audio.hasVietnameseVoice ? 'có' : 'không có (chỉ hiện chữ)'}\n` +
+          `Đồ hoạ: ${QUALITY[quality].label} · ${Math.round(governor.fps)} khung/giây · độ phân giải ${Math.round(governor.ratio * 100)}%`,
       );
     }
     camera.getWorldDirection(tmpV);
@@ -826,7 +894,10 @@ requestAnimationFrame(frame);
 
 // Chỉ khi chạy npm run dev: cho script kiểm tra tự động (chụp màn hình…) truy cập trạng thái game.
 if (import.meta.env.DEV) {
-  (window as unknown as Record<string, unknown>).__hd30 = { camera, player, dev, devHost, get game() { return game; } };
+  (window as unknown as Record<string, unknown>).__hd30 = {
+    camera, player, dev, devHost, get game() { return game; }, get auditorView() { return auditorView; }, get captureView() { return captureView; }, get throwAim() { return throwAim; },
+    renderInfo: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: governor.ratio, programs: renderer.info.programs?.length }),
+  };
 }
 
 window.addEventListener('resize', () => {

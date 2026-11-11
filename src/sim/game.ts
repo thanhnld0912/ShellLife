@@ -3,9 +3,9 @@
 
 import type { V2 } from './geometry.ts';
 import { inBox } from './geometry.ts';
-import { Auditor, tuningForNight, type AuditorTuning } from './auditor.ts';
+import { Auditor, ROUTE_STYLES, tuningForNight, type AuditorTuning, type RouteStyle } from './auditor.ts';
 import {
-  CONG, DRIFT, FREEZER_TIMES, LITTER_PENALTY, ORDER_DUE, REAL_PER_MIN, SAFE, SHIFT_MINUTES, Shift, type Order, type OrderKind, type TaskKind,
+  CONG, DRIFT, clockOf, FREEZER_TIMES, LITTER_PENALTY, ORDER_DUE, REAL_PER_MIN, SAFE, SHIFT_MINUTES, Shift, type Order, type OrderKind, type TaskKind,
 } from './shift.ts';
 import { CLOCK_ZONE, COLD_UNITS, PLAYER_SPAWN, SECTIONS, coldUnitById, sectionById, storageSlot, type Section } from './layout.ts';
 import { mulberry32 } from './rng.ts';
@@ -40,6 +40,9 @@ export interface Evaluation {
   congBeforeLitter: number;
   litterLeft: number;
   litterPenalty: number;
+  /** Chấm công vào ca trễ (sau hạn đầu ca) thì bị trừ công. */
+  lateIn: boolean;
+  lateInPenalty: number;
 }
 
 /** Mô tả phiếu việc (để hiện chữ). */
@@ -81,6 +84,8 @@ export type GameEvent =
   | { type: 'stored'; name: string; slot: V2 }
   /** Bắt đầu đêm mới mà không qua phiếu đánh giá (nhảy đêm trong bảng sự kiện). */
   | { type: 'night' }
+  /** Chấm công vào ca ở máy chấm công (late: sau hạn). */
+  | { type: 'clockIn'; late: boolean }
   /** Thông báo của bảng sự kiện (chỉ để hiện cho người thử). */
   | { type: 'dev'; text: string }
   /** Máy in giao phiếu việc mới / phiếu quá hạn / phiếu đã xong. */
@@ -94,12 +99,21 @@ export interface TaskResult { ok: boolean; msg: string; cong?: number; safeCappe
 export interface EventConfig {
   /** Người Kiểm Kê vào ca sau bao nhiêu phút trong game (tính từ 22:00). */
   auditorStart: number;
+  /** Hạn chấm công vào ca (phút từ 22:00). Nhân viên bắt đầu ở phòng nghỉ, phải chạy tới máy chấm công trong kho. */
+  clockInBy: number;
+  /** Phải chấm công vào ca mới được làm việc (tắt để thử nhanh). */
+  clockInRequired: boolean;
   /** Có tự mất điện không. */
   blackoutAuto: boolean;
   /** Mất điện từ đêm này trở đi. */
   blackoutFromNight: number;
-  /** Mất điện kéo dài bao nhiêu phút trong game (80 phút ≈ 45 giây thật). */
+  /** Mỗi lần mất điện kéo dài bao nhiêu phút trong game (60 phút ≈ 34 giây thật). */
   blackoutMinutes: number;
+  /**
+   * Số lần mất điện tối đa mỗi đêm. Đêm đầu có mất điện: 1 lần, mỗi đêm sau thêm 1 lần (tới mức tối đa).
+   * Các lần cách nhau ít nhất 40 phút trong game.
+   */
+  blackoutMax: number;
   /** Số phiếu việc mỗi đêm = ordersBase + ordersPerNight × đêm. */
   ordersBase: number;
   ordersPerNight: number;
@@ -109,11 +123,17 @@ export interface EventConfig {
   latePenalty: boolean;
 }
 
+/** Chấm công vào ca trễ: trừ chừng này công lúc 06:00. */
+export const LATE_IN_PENALTY = 2;
+
 export const DEFAULT_EVENTS: EventConfig = {
-  auditorStart: 10,
+  auditorStart: 15,
+  clockInBy: 30,
+  clockInRequired: true,
   blackoutAuto: true,
   blackoutFromNight: 2,
-  blackoutMinutes: 80,
+  blackoutMinutes: 60,
+  blackoutMax: 3,
   ordersBase: 3,
   ordersPerNight: 1,
   orderTimeMul: 1,
@@ -128,6 +148,8 @@ export interface DevFlags {
   noDeath: boolean;
 }
 
+export interface Blackout { id: number; start: number; end: number }
+
 export interface GameOptions {
   seed?: number;
   events?: Partial<EventConfig>;
@@ -141,12 +163,17 @@ export class Game {
   shift: Shift;
   auditor: Auditor;
   /** carry: đang ôm thùng hàng khô (từ kho), thùng hàng lạnh (từ kho lạnh), hoặc không ôm gì. */
-  player: { pos: V2; alive: boolean; light: boolean; carry: 'dry' | 'cold' | null } = {
-    pos: { ...PLAYER_SPAWN }, alive: true, light: false, carry: null,
+  /** clockedIn: đã chấm công vào ca (chưa chấm thì chưa làm việc được); lateIn: chấm sau hạn. */
+  player: { pos: V2; alive: boolean; light: boolean; carry: 'dry' | 'cold' | null; clockedIn: boolean; lateIn: boolean } = {
+    pos: { ...PLAYER_SPAWN }, alive: true, light: false, carry: null, clockedIn: false, lateIn: false,
   };
-  /** Điện siêu thị. Mất điện từ đêm 2: mỗi đêm một lần, khoảng 80 phút trong game (~45 giây thật). */
+  /** Điện siêu thị. Mất điện từ đêm 2, mỗi đêm sau thêm một lần (xem EventConfig.blackoutMax). */
   power = true;
-  blackout: { start: number; end: number } | null = null;
+  /** Lịch mất điện đêm nay (phút trong ca), sắp theo giờ. */
+  blackouts: Blackout[] = [];
+  private nextBlackoutId = 1;
+  /** Mỗi đêm Người Kiểm Kê đi một kiểu lộ trình khác (không lặp lại kiểu của đêm trước). */
+  private routeSeed = 0;
   phase: 'shift' | 'eval' | 'dead' | 'done' = 'shift';
   events: GameEvent[] = [];
   eventCfg: EventConfig;
@@ -177,8 +204,9 @@ export class Game {
     this.eventCfg = { ...DEFAULT_EVENTS, ...o.events };
     this.tuneOverride = { ...o.tuning };
     this.shift = new Shift(1, this.rng);
+    this.routeSeed = Math.floor(this.rng() * ROUTE_STYLES.length);
     this.auditor = this.makeAuditor();
-    this.blackout = this.planBlackout();
+    this.blackouts = this.planBlackouts();
     this.orderPlan = this.planOrders();
   }
 
@@ -195,16 +223,41 @@ export class Game {
   }
 
   private makeAuditor(): Auditor {
-    const a = new Auditor({ ...tuningForNight(this.night), ...this.tuneOverride }, this.rng);
+    const a = new Auditor({ ...tuningForNight(this.night), ...this.tuneOverride }, this.rng, this.routeStyle);
     a.storeIndex = this.storedCount;
     return a;
   }
 
-  private planBlackout(): { start: number; end: number } | null {
+  /** Kiểu lộ trình tuần tra của đêm hiện tại. */
+  get routeStyle(): RouteStyle {
+    return ROUTE_STYLES[(this.routeSeed + this.night - 1) % ROUTE_STYLES.length];
+  }
+
+  /** Lần mất điện đang diễn ra, hoặc lần sắp tới (null nếu đêm nay không còn). */
+  get blackout(): Blackout | null {
+    const m = this.shift.minutes;
+    return this.blackouts.find((b) => b.end > m) ?? null;
+  }
+
+  /**
+   * Rải các lần mất điện từ 23:00 tới 05:10: chia đều thành từng khoảng, mỗi lần nằm ngẫu nhiên trong khoảng của nó,
+   * cách lần trước ít nhất 40 phút.
+   */
+  private planBlackouts(from = 60): Blackout[] {
     const c = this.eventCfg;
-    if (!c.blackoutAuto || this.night < c.blackoutFromNight) return null;
-    const start = 120 + Math.floor(this.rng() * 180); // từ 00:00 đến 03:00
-    return { start, end: start + c.blackoutMinutes };
+    if (!c.blackoutAuto || this.night < c.blackoutFromNight) return [];
+    const n = Math.max(0, Math.min(c.blackoutMax, 1 + this.night - c.blackoutFromNight));
+    const end = 430;
+    const span = (end - from) / Math.max(1, n);
+    const out: Blackout[] = [];
+    for (let i = 0; i < n; i++) {
+      const lo = Math.max(from + span * i, out.length ? out[out.length - 1].end + 40 : from);
+      const hi = from + span * (i + 1) - c.blackoutMinutes;
+      if (hi < lo) continue;
+      const start = Math.round(lo + this.rng() * (hi - lo));
+      out.push({ id: this.nextBlackoutId++, start, end: start + c.blackoutMinutes });
+    }
+    return out;
   }
 
   /** Bật/tắt mất điện ngay (phím F6 khi bật F3, hoặc bảng sự kiện). */
@@ -229,6 +282,12 @@ export class Game {
     }
     if (this.phase !== 'shift') return;
     this.shift.minutes += dt / REAL_PER_MIN;
+    // Chấm công vào ca: đứng ở máy chấm công trong kho
+    if (!this.player.clockedIn && this.player.alive && inBox(this.player.pos, CLOCK_ZONE)) {
+      this.player.clockedIn = true;
+      this.player.lateIn = this.shift.minutes > this.eventCfg.clockInBy;
+      this.events.push({ type: 'clockIn', late: this.player.lateIn });
+    }
     this.schedule();
     this.updateOrders(dt);
     this.auditor.update(dt, this.player.pos, this.player.alive && !this.dev.invisible, this.player.light);
@@ -250,7 +309,14 @@ export class Game {
   }
 
   // ---- Việc ----
+  /** Chưa chấm công vào ca thì chưa được làm việc. */
+  private notClockedIn(): TaskResult | null {
+    return this.player.clockedIn || !this.eventCfg.clockInRequired ? null : { ok: false, msg: 'Chưa chấm công vào ca: tới MÁY CHẤM CÔNG trong KHO trước đã.' };
+  }
+
   scanSection(id: string): TaskResult {
+    const nc = this.notClockedIn();
+    if (nc) return nc;
     const sec = sectionById(id);
     if (!sec) return { ok: false, msg: 'Không xác định được kệ.' };
     if (this.shift.scanned.has(id)) return { ok: false, msg: `${sec.name}: đã quét trong ca này.` };
@@ -263,6 +329,8 @@ export class Game {
   }
 
   restock(id: string): TaskResult {
+    const nc = this.notClockedIn();
+    if (nc) return nc;
     const sec = sectionById(id);
     if (!sec) return { ok: false, msg: 'Không xác định được kệ.' };
     if (!this.shift.restockNeeded.has(id)) return { ok: false, msg: `${sec.name} không thiếu hàng.` };
@@ -276,6 +344,8 @@ export class Game {
 
   /** Xếp thùng hàng lạnh vào tủ lạnh đang hết hàng. */
   restockCold(id: string): TaskResult {
+    const nc = this.notClockedIn();
+    if (nc) return nc;
     const u = coldUnitById(id);
     if (!u) return { ok: false, msg: 'Không xác định được tủ.' };
     if (!this.shift.coldNeeded.has(id)) return { ok: false, msg: `${u.name} không hết hàng.` };
@@ -294,6 +364,8 @@ export class Game {
 
   /** Giao thùng đang ôm ở quầy cho đơn gấp (gần hạn nhất). */
   deliver(): TaskResult {
+    const nc = this.notClockedIn();
+    if (nc) return nc;
     if (!this.deliveryOpen) return { ok: false, msg: 'Không có đơn gấp nào cần giao.' };
     if (this.player.carry === 'cold') return { ok: false, msg: 'Đơn gấp cần thùng hàng khô từ KHO, không phải thùng hàng lạnh.' };
     this.player.carry = null;
@@ -302,6 +374,8 @@ export class Game {
   }
 
   freezer(): TaskResult {
+    const nc = this.notClockedIn();
+    if (nc) return nc;
     const w = this.shift.freezerWindow();
     if (w === null) return { ok: false, msg: 'Chưa đến giờ ghi nhiệt độ (23:00, 01:00, 03:00, 05:00).' };
     if (this.shift.freezerDone.has(w)) return { ok: false, msg: 'Mốc giờ này đã ghi rồi.' };
@@ -475,7 +549,12 @@ export class Game {
   private schedule(): void {
     const m = this.shift.minutes;
     this.once('open', m >= 0, () =>
-      this.announce(`Kính chào quý khách. Ca đêm thứ ${numberVi(this.night)} bắt đầu. Nhân viên ca đêm: một người.`),
+      this.announce(
+        `Ca đêm thứ ${numberVi(this.night)} bắt đầu. Nhân viên chấm công vào ca tại máy chấm công trong kho trước ${clockOf(this.eventCfg.clockInBy).replace(':', ' giờ ')}.`,
+      ),
+    );
+    this.once('lateIn', m >= this.eventCfg.clockInBy && !this.player.clockedIn && this.eventCfg.clockInRequired, () =>
+      this.announce(`Nhân viên ${this.name} chưa chấm công vào ca. Ghi nhận: đi trễ.`),
     );
     this.once('auditor', m >= this.eventCfg.auditorStart, () => {
       this.auditor.activate();
@@ -489,17 +568,22 @@ export class Game {
         `Nhân viên ${this.name}: ${numberVi(this.shift.cong)} trên ${numberVi(this.shift.quota)} công.`,
       ),
     );
-    const b = this.blackout;
-    if (b) {
-      this.once('bo_off', m >= b.start, () => {
+    this.blackouts.forEach((b, i) => {
+      this.once(`bo_off_${b.id}`, m >= b.start && m < b.end, () => {
         this.setPower(false);
-        this.announce('Sự cố mất điện. Nhân viên tiếp tục làm việc bằng đèn pin. Thời gian mất điện vẫn tính là giờ làm.');
+        this.announce(
+          i === 0
+            ? 'Sự cố mất điện. Nhân viên tiếp tục làm việc bằng đèn pin. Thời gian mất điện vẫn tính là giờ làm.'
+            : 'Sự cố mất điện lần nữa. Nhân viên tiếp tục làm việc.',
+        );
       });
-      this.once('bo_on', m >= b.end, () => {
-        this.setPower(true);
-        this.announce('Điện đã có lại. Cảm ơn nhân viên đã không nghỉ.');
+      this.once(`bo_on_${b.id}`, m >= b.end, () => {
+        if (!this.power) {
+          this.setPower(true);
+          this.announce('Điện đã có lại. Cảm ơn nhân viên đã không nghỉ.');
+        }
       });
-    }
+    });
     this.once('rollcall', m >= 450, () => this.announce('Còn ba mươi phút đến điểm danh. Nhân viên chấm công tại máy chấm công trong kho.'));
   }
 
@@ -569,7 +653,10 @@ export class Game {
     // Lon nước để lại trên sàn: trừ công trước khi xét chỉ tiêu
     const litterLeft = s.litter.length;
     const litterPenalty = litterLeft * LITTER_PENALTY;
-    const cong = Math.max(0, s.cong - litterPenalty);
+    // Chấm công vào ca trễ (hoặc không chấm): trừ công
+    const lateIn = this.eventCfg.clockInRequired && (!this.player.clockedIn || this.player.lateIn);
+    const lateInPenalty = lateIn ? LATE_IN_PENALTY : 0;
+    const cong = Math.max(0, s.cong - litterPenalty - lateInPenalty);
     if (cong < s.quota) {
       add++;
       reasons.push(
@@ -605,6 +692,8 @@ export class Game {
       congBeforeLitter: s.cong,
       litterLeft,
       litterPenalty,
+      lateIn,
+      lateInPenalty,
       quota: s.quota,
       safeEarned: s.earnedSafe,
       safeCap: s.safeCap,
@@ -642,6 +731,7 @@ export class Game {
     if (st.runSec >= 15) n.push(`Chạy trong siêu thị ${Math.round(st.runSec)} giây. Lý do khai báo: "bị dí".`);
     if (st.lightSpotted >= 2) n.push(`Rọi đèn pin vào kiểm kê viên ${st.lightSpotted} lần. Đề nghị tiết kiệm pin.`);
     if (st.drops >= 1) n.push(`Làm rơi ${st.drops} thùng hàng khi đang chạy. Hàng dễ vỡ, nhân viên thì không.`);
+    if (this.player.lateIn) n.push('Chấm công vào ca trễ. Phòng nghỉ không phải chỗ ngủ.');
     if (st.seen >= 2) n.push(`Bị kiểm kê viên quét trúng ${st.seen} lần nhưng vẫn còn ở đây. Đáng ngờ.`);
     if (this.shift.cong >= this.shift.quota * 1.5) n.push('Nhân viên có dấu hiệu chăm chỉ bất thường.');
     const d = Math.round(this.shift.drift * 100);
@@ -659,10 +749,12 @@ export class Game {
     this.player.pos = { ...PLAYER_SPAWN };
     this.player.alive = true;
     this.player.carry = null;
+    this.player.clockedIn = false;
+    this.player.lateIn = false;
     this.phase = 'shift';
     this.announced.clear();
     this.power = true;
-    this.blackout = this.planBlackout();
+    this.blackouts = this.planBlackouts();
     this.orderPlan = this.planOrders();
   }
 
@@ -687,13 +779,15 @@ export class Game {
   devSetPower(on: boolean): void {
     if (this.power === on) return;
     const m = this.shift.minutes;
-    this.announced.delete('bo_off');
-    this.announced.delete('bo_on');
     if (on) {
-      this.blackout = { start: m - 1, end: m };
-      this.announced.add('bo_off');
+      // Kết thúc lần mất điện đang diễn ra ngay bây giờ
+      const cur = this.blackouts.find((b) => b.start <= m && b.end > m);
+      if (cur) cur.end = m;
+      else this.setPower(true);
     } else {
-      this.blackout = { start: m, end: m + this.eventCfg.blackoutMinutes };
+      // Mất điện ngay; bỏ các lần sắp tới bị chồng lên
+      const b: Blackout = { id: this.nextBlackoutId++, start: m, end: m + this.eventCfg.blackoutMinutes };
+      this.blackouts = [...this.blackouts.filter((x) => x.end <= m || x.start >= b.end + 40), b].sort((x, y) => x.start - y.start);
     }
   }
 
@@ -705,11 +799,11 @@ export class Game {
     this.announce('Kiểm kê viên bắt đầu làm việc. Không để kiểm kê viên kiểm đếm nhân viên.');
   }
 
-  /** Cho Người Kiểm Kê về kho nghỉ (đến khi gọi lại). */
+  /** Cho Người Kiểm Kê về văn phòng đứng chờ (đến khi gọi lại). */
   devAuditorRest(): void {
     this.announced.add('auditor'); // không tự vào lại theo lịch
     this.auditor.retire();
-    this.devNote('Người Kiểm Kê đã về kho nghỉ. Bấm "Gọi vào ngay" để gọi lại.');
+    this.devNote('Người Kiểm Kê đã về văn phòng. Bấm "Gọi vào ngay" để gọi lại.');
   }
 
   /** Dụ Người Kiểm Kê tới một điểm (như nghe thấy tiếng động rất to ở đó). */
@@ -754,10 +848,16 @@ export class Game {
   /** Đổi lịch sự kiện. Lịch mất điện của đêm này được tính lại nếu chưa mất điện. */
   setEventConfig(cfg: Partial<EventConfig>): void {
     this.eventCfg = { ...this.eventCfg, ...cfg };
-    if (!this.announced.has('bo_off')) this.blackout = this.planBlackout();
-    else if (this.blackout && !this.announced.has('bo_on')) {
-      this.blackout = { start: this.blackout.start, end: this.blackout.start + this.eventCfg.blackoutMinutes };
-    }
+    // Giữ các lần đã bắt đầu (lần đang mất điện thì đổi độ dài), lên lịch lại các lần chưa tới
+    const m = this.shift.minutes;
+    const started = this.blackouts.filter((b) => b.start <= m);
+    for (const b of started) if (b.end > m) b.end = Math.max(m, b.start + this.eventCfg.blackoutMinutes);
+    const last = started.length ? started[started.length - 1].end + 40 : Math.max(60, m);
+    const want = this.planBlackouts(Math.max(60, m, last));
+    const total = this.eventCfg.blackoutAuto && this.night >= this.eventCfg.blackoutFromNight
+      ? Math.min(this.eventCfg.blackoutMax, 1 + this.night - this.eventCfg.blackoutFromNight)
+      : 0;
+    this.blackouts = [...started, ...want.slice(0, Math.max(0, total - started.length))];
   }
 
   /** Ghi đè thông số Người Kiểm Kê (có hiệu lực ngay và cho các đêm sau). */

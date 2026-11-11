@@ -15,6 +15,8 @@ OUT_GLB = os.path.join(ROOT, 'public', 'models')
 OUT_PREV = os.path.join(ROOT, 'art', 'preview')
 OUT_BLEND = os.path.join(ROOT, 'art', 'blender', 'mau_lowpoly.blend')
 RENDER = '--khong-render' not in sys.argv
+# "-- --chi-xem=nguoi_kiem_ke,nhan_vien_ngo": chỉ render ảnh xem trước của các model này (và ảnh tổng quan)
+CHI_XEM = set(next((a.split('=', 1)[1].split(',') for a in sys.argv if a.startswith('--chi-xem=')), []))
 os.makedirs(OUT_GLB, exist_ok=True)
 os.makedirs(OUT_PREV, exist_ok=True)
 
@@ -213,50 +215,87 @@ def ke_hang():
     return finish(P, 'ke_hang', 'Kệ hàng (module 1,3 m, cao 2,4 m)',
                   'Gondola 2 mặt, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).')
 
-# 2. Người Kiểm Kê
+# 2. Người Kiểm Kê (thiết kế lại): cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối, cà vạt đỏ sẫm.
+#    Đầu trứng trơn không mặt, chỗ mắt dán một nhãn MÃ VẠCH. Tay phải dài quá gối với 3 ngón dài.
+#    Tay trái cầm máy quét kiểu súng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y trong game).
+KK = dict(hip=1.02, chest=1.72, neck=1.9, head_top=2.15,
+          sh=0.21, sh_z=1.70,
+          elbow_L=(0.25, -0.05, 1.32), wrist_L=(0.13, -0.38, 1.26),
+          elbow_R=(-0.25, 0.01, 1.22), wrist_R=(-0.24, -0.02, 0.76),
+          knee=0.55)
 def nguoi_kiem_ke():
     P = []
     U, Q, S, K = C['dong_phuc'], C['quan_kk'], C['da_kk'], C['nhua_den']
-    # Quy ước bên: .L = phía +X (tay cầm máy quét), .R = phía -X (tay buông thõng)
+    AO = M('ao_khoac_kk', 0x3a4148, 0.9)          # áo khoác dài
+    VAT = M('ca_vat_kk', 0x5c1414, 0.7)
+    knee = KK['knee']
+    # Quy ước bên: .L = phía +X (tay cầm máy quét), .R = phía -X (tay dài buông thõng)
     for sx, sd in ((1, 'L'), (-1, 'R')):
         bo('cang.' + sd)
-        box(P, (0.11, 0.27, 0.07), (sx * 0.1, -0.04, 0.035), K, bev=0.01)          # giày
-        limb(P, (sx * 0.1, 0, 0.07), (sx * 0.105, 0, 0.53), 0.055, Q, r2=0.064)     # cẳng chân
-        ball(P, 0.064, (sx * 0.105, 0, 0.53), Q, sub=1)                             # đầu gối
+        box(P, (0.1, 0.3, 0.06), (sx * 0.1, -0.06, 0.03), K, bev=0.012)          # giày da mũi dài
+        limb(P, (sx * 0.1, 0, 0.06), (sx * 0.102, 0, knee), 0.042, Q, r2=0.05)     # cẳng chân mảnh
         bo('dui.' + sd)
-        limb(P, (sx * 0.105, 0, 0.53), (sx * 0.11, 0, 0.98), 0.064, Q, r2=0.075)    # đùi dài
+        limb(P, (sx * 0.102, 0, knee), (sx * 0.1, 0, KK['hip']), 0.05, Q, r2=0.06)
+        # vạt áo khoác: mỗi bên một tấm theo đùi (bước đi thì vạt áo xoè theo)
+        v = mesh(P, 'vat_' + sd, [
+            (sx * 0.005, -0.13, KK['hip'] + 0.02), (sx * 0.2, -0.11, KK['hip'] + 0.02),
+            (sx * 0.2, 0.11, KK['hip'] + 0.02), (sx * 0.005, 0.12, KK['hip'] + 0.02),
+            (sx * 0.0, -0.15, knee - 0.02), (sx * 0.23, -0.12, knee - 0.02),
+            (sx * 0.23, 0.13, knee - 0.02), (sx * 0.0, 0.14, knee - 0.02)],
+            [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7), (4, 5, 6, 7)] if sx > 0 else
+            [(4, 5, 1, 0), (5, 6, 2, 1), (6, 7, 3, 2), (7, 4, 0, 3), (7, 6, 5, 4)], AO)
     bo('hong')
-    box(P, (0.34, 0.2, 0.16), (0, 0, 1.0), Q)                                     # hông
+    box(P, (0.32, 0.22, 0.14), (0, 0, KK['hip'] + 0.02), AO)
     bo('than')
-    t = cyl(P, 0.17, 0.66, (0, 0, 1.4), U, n=8, r2=0.23)                          # thân
+    t = cyl(P, 0.17, KK['chest'] - KK['hip'], (0, 0, (KK['chest'] + KK['hip']) / 2 + 0.02), AO, n=8, r2=0.215)
     t.scale = (1, 0.62, 1)
-    box(P, (0.2, 0.03, 0.08), (0, -0.115, 1.7), C['giay'])                        # cổ áo
-    box(P, (0.1, 0.012, 0.065), (-0.1, -0.138, 1.52), C['giay'])                  # thẻ tên trắng (trống)
+    box(P, (0.11, 0.02, 0.32), (0, -0.115, 1.55), C['giay'])                       # sơ mi trắng lộ ra
+    box(P, (0.045, 0.012, 0.27), (0, -0.128, 1.52), VAT)                           # cà vạt
+    box(P, (0.06, 0.014, 0.03), (0, -0.128, 1.665), VAT)
+    for sx in (-1, 1):                                                             # ve áo
+        box(P, (0.05, 0.02, 0.3), (sx * 0.07, -0.118, 1.55), AO, rot=(0, sx * 0.25, 0))
+        box(P, (0.1, 0.13, 0.05), (sx * KK['sh'], 0, KK['sh_z'] + 0.01), AO, bev=0.01)  # vai áo cứng
+    limb(P, (0.06, -0.125, 1.7), (0.1, -0.13, 1.4), 0.006, K, n=4)                # dây đeo thẻ
+    box(P, (0.07, 0.01, 0.095), (0.1, -0.132, 1.36), C['giay'])                   # thẻ trắng không tên
+    for i in range(4):                                                             # cúc áo
+        box(P, (0.02, 0.01, 0.02), (-0.045, -0.12, 1.12 + i * 0.09), K)
     bo('co')
-    limb(P, (0, 0.02, 1.7), (0, -0.03, 1.86), 0.045, S)                           # cổ hơi dài
+    limb(P, (0, 0.0, KK['chest']), (0, -0.06, KK['neck']), 0.04, S)               # cổ dài, đổ tới trước
+    box(P, (0.13, 0.1, 0.04), (0, -0.01, KK['chest'] + 0.02), C['giay'])           # cổ áo
     bo('dau')
-    ball(P, 0.13, (0, -0.07, 1.93), S, scale=(0.95, 1.0, 1.18))                   # đầu không mặt, cúi về trước
-    cyl(P, 0.145, 0.08, (0, -0.07, 2.07), K, n=10)                                # mũ
-    box(P, (0.25, 0.14, 0.015), (0, -0.2, 2.035), K, rot=(0.25, 0, 0))            # lưỡi trai
-    # tay buông thõng, dài quá hông (khó chịu khi nhìn lâu)
+    ball(P, 0.12, (0, -0.09, 2.0), S, scale=(0.88, 1.0, 1.28), sub=2)              # đầu trứng trơn
+    ball(P, 0.123, (0, -0.07, 2.06), C['toc'], scale=(0.9, 1.0, 0.82))             # tóc chải bết sát đầu
+    box(P, (0.16, 0.012, 0.06), (0, -0.2, 2.0), C['giay'], rot=(0.08, 0, 0))       # nhãn mã vạch thay cho mắt
+    for i, w in enumerate((0.008, 0.004, 0.012, 0.004, 0.006, 0.01, 0.004, 0.008, 0.005, 0.01)):
+        box(P, (w, 0.004, 0.045), (-0.062 + i * 0.0138, -0.207, 2.0), K, rot=(0.08, 0, 0))
+    # tay phải buông thõng, dài quá gối, ba ngón dài
+    ex, ey, ez = KK['elbow_R']
+    wx, wy, wz = KK['wrist_R']
     bo('tay_tren.R')
-    limb(P, (-0.25, 0, 1.66), (-0.29, 0.01, 1.25), 0.045, U, r2=0.04)
+    limb(P, (-KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.045, AO, r2=0.04)
     bo('tay_duoi.R')
-    ball(P, 0.042, (-0.29, 0.01, 1.25), U)
-    limb(P, (-0.29, 0.01, 1.25), (-0.27, -0.02, 0.8), 0.04, U, r2=0.032)
-    box(P, (0.05, 0.08, 0.14), (-0.27, -0.02, 0.71), S)                          # bàn tay
-    # tay cầm máy quét ngang ngực, chĩa về trước
+    ball(P, 0.04, (ex, ey, ez), AO)
+    limb(P, (ex, ey, ez), (wx, wy, wz), 0.04, AO, r2=0.034)
+    box(P, (0.045, 0.07, 0.09), (wx, wy, wz - 0.05), S)                            # lòng bàn tay
+    for fy in (-0.025, 0.0, 0.025):                                               # 3 ngón dài tới gối
+        limb(P, (wx, wy + fy, wz - 0.09), (wx + 0.012, wy + fy * 1.4, wz - 0.3), 0.011, S, n=4, r2=0.007)
+    # tay trái cầm máy quét kiểu súng, chĩa về trước
+    ex, ey, ez = KK['elbow_L']
+    wx, wy, wz = KK['wrist_L']
     bo('tay_tren.L')
-    limb(P, (0.25, 0, 1.66), (0.28, -0.04, 1.3), 0.045, U, r2=0.04)
+    limb(P, (KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.045, AO, r2=0.04)
     bo('tay_duoi.L')
-    ball(P, 0.042, (0.28, -0.04, 1.3), U)
-    limb(P, (0.28, -0.04, 1.3), (0.15, -0.38, 1.25), 0.04, U, r2=0.032)
-    box(P, (0.06, 0.09, 0.08), (0.14, -0.42, 1.23), S)
-    box(P, (0.05, 0.06, 0.16), (0.12, -0.44, 1.18), K, rot=(0.3, 0, 0))           # tay cầm máy quét
-    box(P, (0.11, 0.12, 0.09), (0.12, -0.5, 1.27), K, bev=0.008)                  # đầu máy quét
-    box(P, (0.08, 0.01, 0.05), (0.12, -0.565, 1.27), C['den_do'])                 # mắt quét đỏ
+    ball(P, 0.04, (ex, ey, ez), AO)
+    limb(P, (ex, ey, ez), (wx, wy, wz), 0.04, AO, r2=0.034)
+    box(P, (0.055, 0.08, 0.07), (wx, wy - 0.04, wz - 0.02), S)
+    box(P, (0.045, 0.055, 0.15), (0.12, -0.44, 1.18), K, rot=(0.3, 0, 0))          # báng máy quét
+    box(P, (0.1, 0.16, 0.09), (0.12, -0.5, 1.27), C['nhua_xam'], bev=0.01)         # thân máy quét
+    box(P, (0.08, 0.01, 0.055), (0.12, -0.583, 1.27), C['den_do'])                 # cửa sổ quét đỏ
+    box(P, (0.05, 0.05, 0.012), (0.12, -0.47, 1.322), C['den_xanh'])               # màn hình nhỏ
     return finish(P, 'nguoi_kiem_ke', 'Người Kiểm Kê',
-                  'Cao 2,05 m, gầy, đầu không mặt luôn cúi, tay trái dài quá hông, tay phải cầm máy quét ở độ cao 1,25 m (khớp SCANNER_Y). Thẻ tên để trống.')
+                  'Cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối (vạt áo bay theo bước chân), cà vạt đỏ sẫm. '
+                  'Đầu trơn không mặt, chỗ mắt là nhãn mã vạch. Tay phải dài quá gối, 3 ngón dài. Tay trái cầm '
+                  'máy quét kiểu súng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.')
 
 # 3. Nhân viên (người chơi nhìn thấy nhau)
 def nhan_vien():
@@ -996,19 +1035,114 @@ def bones_human(hip_z, chest, neck_top, head_top, head_y, shoulders, elbows, wri
 objs = {o.name: o for o, _ in MODELS}
 metas = {m['file'][:-4]: m for _, m in MODELS}
 
+# ---------- Người Kiểm Kê: cảnh bắt người
+KK_LT = KK['hip'] - KK['knee']
+KK_LS = KK['knee'] - 0.06
+# Tư thế vác thùng trên vai phải: cánh tay giơ ngang ra ngoài, cẳng tay dựng đứng giữ cạnh thùng.
+# Trong game thùng đặt ở (-0,42; 1,74; 0) so với gốc model (xem captureView.ts, SHOULDER_BOX).
+VAI = {'tay_tren.R': (0, 85, 0), 'tay_duoi.R': (0, 95, 0), 'dau': (0, 12, 0), 'than': (0, 5, 0)}
+
+def mix(a, b, k):
+    """Trộn hai tư thế (dict góc) theo k (0 = a, 1 = b)."""
+    out = {}
+    for key in set(a) | set(b):
+        va, vb = a.get(key, (0, 0, 0)), b.get(key, (0, 0, 0))
+        out[key] = tuple(x + (y - x) * k for x, y in zip(va, vb))
+    return out
+
+def crouch(d, k):
+    """Khuỵu gối k (0..1), bàn chân giữ nguyên trên sàn."""
+    a, b = -32 * k, 55 * k
+    for sd in ('L', 'R'):
+        d['dui.' + sd] = (d.get('dui.' + sd, (0, 0, 0))[0] + a, 0, 0)
+        d['cang.' + sd] = (d.get('cang.' + sd, (0, 0, 0))[0] + b, 0, 0)
+    d['_loc'] = leg_comp(a, b, KK_LT, KK_LS)
+    return d
+
+def kk_lao_toi(t, T):
+    """Lao tới: đổ người về trước, sải cực dài, tay dài vươn thẳng ra chộp, đầu khoá vào mục tiêu."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 44, 95, base_knee=10)
+    d['hong'] = (0, 3 * s, 5 * s)
+    d['than'] = (30, 0, -4 * s)
+    d['co'] = (-14, 0, 0)
+    d['dau'] = (-22, 0, 0)
+    d['tay_tren.R'] = (-88 + 5 * s, -6, 0)
+    d['tay_duoi.R'] = (-6, 0, 0)
+    d['tay_tren.L'] = (-18, 0, 0)
+    d['_loc'] = (0, 0, -0.05 * s * s)
+    return d
+
+def kk_bat(t, T):
+    """Bắt và đóng thùng (3 giây, khớp BOXING_TIME):
+       0–0,3 chộp · 0,3–0,55 giơ thùng lên quá đầu · 0,55–0,7 úp mạnh xuống · 1,4–2,0 ấn bẹp thùng
+       2,0–2,35 kéo băng keo · 2,35–2,6 quét mã thùng (bíp) · 2,6–3,0 nhấc thùng lên vai."""
+    reach = seg(t, 0.0, 0.3) * (1 - seg(t, 0.3, 0.5))
+    up = seg(t, 0.3, 0.5) * (1 - snap(t, 0.55, 0.7))
+    slam = snap(t, 0.55, 0.7) * (1 - seg(t, 1.3, 1.45))
+    press = seg(t, 1.4, 1.65) * (1 - seg(t, 1.95, 2.1))
+    jolt = math.sin(t * 40) * press * 2
+    tape = seg(t, 1.95, 2.1) * (1 - seg(t, 2.3, 2.45))
+    sweep = -30 + 60 * seg(t, 2.05, 2.32)
+    scan = seg(t, 2.3, 2.42) * (1 - seg(t, 2.52, 2.65))
+    lift = seg(t, 2.6, 3.0)
+    d = {
+        'tay_tren.R': (-62 * reach - 172 * up - 58 * slam - 48 * press - 62 * tape, 0, sweep * tape),
+        'tay_duoi.R': (-8 * reach - 10 * up + 4 * slam, 0, 0),
+        'tay_tren.L': (-12 * reach - 150 * up - 52 * slam - 42 * press + 8 * scan, 0, 0),
+        'tay_duoi.L': (-10 * up + 42 * scan, 0, 0),
+        'than': (22 * reach - 8 * up + 32 * slam + 46 * press + jolt + 36 * tape + 30 * scan, 0, 0),
+        'co': (-6 * up, 0, 0),
+        'dau': (-12 * reach - 26 * up + 10 * slam + 16 * press + 12 * tape + 22 * scan, 0, 0.6 * sweep * tape),
+    }
+    crouch(d, 0.5 * slam + 0.8 * press + 0.4 * tape + 0.3 * scan)
+    return mix(d, VAI, lift) | ({'_loc': tuple(v * (1 - lift) for v in d['_loc'])})
+
+def kk_vac_hop(t, T):
+    """Đi vác thùng trên vai phải: bước nặng, người nghiêng sang trái, thùng nhún theo bước."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    d = {}
+    legs_walk(d, p, 18, 30)
+    d.update(VAI)
+    d['hong'] = (0, 4 * s, 4 * s)
+    d['than'] = (5, 5 + 2 * s, -3 * s)
+    d['dau'] = (2, 12, 2 * s)
+    d['tay_tren.L'] = (2 * math.sin(2 * p), 0, 0)
+    d['tay_duoi.R'] = (0, 95 + 3 * math.sin(2 * p), 0)
+    d['_loc'] = (0, 0, -0.03 * s * s)
+    return d
+
+def kk_dat_hop(t, T):
+    """Đặt thùng xuống (1 giây, khớp STORE_TIME): hạ thùng từ vai xuống trước mặt, cúi đặt xuống sàn."""
+    a = seg(t, 0.0, 0.35)
+    down = seg(t, 0.15, 0.75)
+    front = {'tay_tren.R': (-50, 0, 0), 'tay_duoi.R': (-15, 0, 0), 'tay_tren.L': (-40, 0, 0), 'tay_duoi.L': (-10, 0, 0)}
+    d = mix(VAI, front, a)
+    d['than'] = (52 * down, 0, 5 * (1 - a))
+    d['dau'] = (20 * down, 12 * (1 - a), 0)
+    crouch(d, 0.9 * down)
+    return d
+
 arm = make_rig(objs['nguoi_kiem_ke'], 'nguoi_kiem_ke', bones_human(
-    0.98, 1.7, 1.86, 2.1, (-0.03, -0.07),
-    shoulders={'L': (0.25, 0, 1.66), 'R': (-0.25, 0, 1.66)},
-    elbows={'L': (0.28, -0.04, 1.3), 'R': (-0.29, 0.01, 1.25)},
-    wrists={'L': (0.15, -0.38, 1.25), 'R': (-0.27, -0.02, 0.8)},
-    knees={'L': (0.105, 0, 0.53), 'R': (-0.105, 0, 0.53)},
-    ankles={'L': (0.1, 0, 0.07), 'R': (-0.1, 0, 0.07)}, hips_x=0.11))
+    KK['hip'], KK['chest'], KK['neck'], KK['head_top'], (-0.06, -0.1),
+    shoulders={'L': (KK['sh'], 0, KK['sh_z']), 'R': (-KK['sh'], 0, KK['sh_z'])},
+    elbows={'L': KK['elbow_L'], 'R': KK['elbow_R']},
+    wrists={'L': KK['wrist_L'], 'R': KK['wrist_R']},
+    knees={'L': (0.102, 0, KK['knee']), 'R': (-0.102, 0, KK['knee'])},
+    ankles={'L': (0.1, 0, 0.06), 'R': (-0.1, 0, 0.06)}, hips_x=0.1))
 KK_CLIPS = [('di', 1.8, kk_di, 'Đi tuần (chậm, đều)', True),
             ('chay', 0.8, kk_chay, 'Chạy (khi mất điện, nghe tiếng động)', True),
             ('dung_im', 4.0, kk_dung, 'Đứng im', True),
             ('quet', 3.2, kk_quet, 'Quét qua lại', True),
             ('quay_dau', 2.4, kk_quay_dau, 'Quay đầu giật (nghe tiếng động)', True),
-            ('dem', 2.8, kk_dem, 'Đếm "Một… Hai…"', True)]
+            ('dem', 2.8, kk_dem, 'Đếm "Một… Hai…"', True),
+            ('lao_toi', 0.55, kk_lao_toi, 'Lao tới chộp người (đếm xong)', True),
+            ('bat', 3.0, kk_bat, 'Bắt và đóng thùng: úp thùng, ấn bẹp, dán băng keo, quét mã, nhấc lên vai', False),
+            ('vac_hop', 1.9, kk_vac_hop, 'Vác thùng trên vai về kho', True),
+            ('dat_hop', 1.0, kk_dat_hop, 'Đặt thùng xuống ô trong kho', False)]
 make_clips(arm, 'nguoi_kiem_ke', [(c[0], c[1], c[2]) for c in KK_CLIPS])
 metas['nguoi_kiem_ke']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in KK_CLIPS]
 
@@ -1281,6 +1415,8 @@ if RENDER:
     cam, floor = setup_render()
     allm = [o for o, _ in MODELS]
     for o, meta in MODELS:
+        if CHI_XEM and o.name not in CHI_XEM:
+            continue
         for x in allm:
             x.hide_render = x is not o
         frame(cam, [o])
@@ -1292,6 +1428,8 @@ if RENDER:
     os.makedirs(os.path.join(OUT_PREV, 'anim'), exist_ok=True)
     scene.render.resolution_x = scene.render.resolution_y = TW
     for mname, rig in RIGS.items():
+        if CHI_XEM and mname not in CHI_XEM:
+            continue
         o = objs[mname]
         for x in allm:
             x.hide_render = x is not o
@@ -1396,7 +1534,8 @@ if RENDER:
         RIGS[k].hide_render = True
         objs[k].hide_render = True
     frame(cam, coldset, direction=(0.55, -1.6, 0.85), pad=0.85)
-    render_to(os.path.join(OUT_PREV, 'tu_lanh_co_hang.png'))
+    if not CHI_XEM:
+        render_to(os.path.join(OUT_PREV, 'tu_lanh_co_hang.png'))
     for x in allm:
         x.hide_render = False
     for g in goods + list(cold.values()):

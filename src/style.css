@@ -35,6 +35,10 @@ label { font: 600 .74rem var(--mono); text-transform: uppercase; color: var(--di
 .start-row { display: flex; gap: .6rem; margin-top: .35rem; }
 .start-row input { flex: 1; min-width: 0; font: 600 16px var(--sans); padding: .65rem .8rem; background: var(--night); color: var(--fluoro); border: 1px solid var(--line); border-radius: 4px; }
 .note { font-size: .82rem; color: var(--dim); margin-bottom: 0; }
+.quality-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; margin-top: .7rem; font-size: .85rem; color: var(--dim); }
+.quality-row label { margin: 0; }
+.quality-row select { font: 600 .9rem var(--sans); padding: .35rem .5rem; background: var(--night); color: var(--fluoro); border: 1px solid var(--line); border-radius: 4px; }
+#quality-info { min-width: 0; }
 .stack { display: flex; flex-direction: column; gap: 1rem; align-items: center; max-width: 24rem; width: 100%; }
 .btns { display: flex; gap: .6rem; }
 #final-out { text-align: center; color: var(--fluoro); min-height: 1.5em; }

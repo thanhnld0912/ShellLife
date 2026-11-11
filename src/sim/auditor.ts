@@ -7,8 +7,7 @@
 import type { AABB, V2 } from './geometry.ts';
 import { clamp, dist, headingTo, inBox, inflate, rayAABB, segIntersectsAABB, turnToward, wrapAngle } from './geometry.ts';
 import {
-  AUDITOR_DOOR, AUDITOR_SPAWN, CHILLERS, COOLERS, COUNTER, FREEZERS, MOVE_BLOCKERS, NAV_X, NAV_Z, OCCLUDERS, SHELVES, STORE,
-  storageSlot, storageStand,
+  AUDITOR_DOOR, AUDITOR_SPAWN, LANES, MOVE_BLOCKERS, OCCLUDERS, ROOMS, STORE, inSafeRoom, roomAt, storageSlot, storageStand,
 } from './layout.ts';
 
 export type AuditorState =
@@ -93,40 +92,77 @@ export function pathClear(a: V2, b: V2): boolean {
   return true;
 }
 
-// ---- Lưới đường đi ----
+// ---- Lưới đường đi (tự sinh từ bố cục) ----
+// Lưới điểm cách nhau 1 m phủ cả siêu thị, bỏ điểm nằm trong vật cản; thêm điểm ngay tại từng ô cửa.
+// Hai điểm gần nhau được nối nếu đi thẳng giữa chúng không vướng gì. Nhờ vậy vào / ra phòng luôn đi qua cửa.
 interface NavNode { p: V2; n: number[] }
 const NODES: NavNode[] = [];
+const NAV_STEP = 1.0;
 {
-  // Mỗi giao điểm (làn dọc × làn ngang) là một nút, trừ chỗ nằm trong vật cản.
-  // Hai nút kề nhau (ngang hoặc dọc) được nối nếu đi thẳng giữa chúng không vướng gì.
-  const grid = new Map<string, number>();
-  NAV_X.forEach((x, i) =>
-    NAV_Z.forEach((z, j) => {
+  const free = (p: V2) => !MOVE_INFLATED.some((b) => inBox(p, b));
+  for (let x = 0.5; x < STORE.w; x += NAV_STEP) {
+    for (let z = 0.5; z < STORE.d; z += NAV_STEP) {
       const p = { x, z };
-      if (MOVE_INFLATED.some((b) => inBox(p, b))) return;
-      grid.set(`${i},${j}`, NODES.length);
-      NODES.push({ p, n: [] });
-    }),
-  );
-  const link = (a: number | undefined, b: number | undefined) => {
-    if (a === undefined || b === undefined || !pathClear(NODES[a].p, NODES[b].p)) return;
-    NODES[a].n.push(b);
-    NODES[b].n.push(a);
-  };
-  for (let i = 0; i < NAV_X.length; i++) {
-    for (let j = 0; j < NAV_Z.length; j++) {
-      link(grid.get(`${i},${j}`), grid.get(`${i + 1},${j}`));
-      link(grid.get(`${i},${j}`), grid.get(`${i},${j + 1}`));
+      if (free(p)) NODES.push({ p, n: [] });
     }
   }
+  for (const r of ROOMS) {
+    for (const z of [STORE.backZ - 0.9, STORE.backZ, STORE.backZ + 0.9]) {
+      const p = { x: r.door.x, z };
+      if (free(p)) NODES.push({ p, n: [] });
+    }
+  }
+  // Nối các điểm gần nhau (lưới ô 2 m để khỏi so từng cặp)
+  const cell = new Map<string, number[]>();
+  const key = (x: number, z: number) => `${Math.floor(x / 2)},${Math.floor(z / 2)}`;
+  NODES.forEach((nd, i) => {
+    const k = key(nd.p.x, nd.p.z);
+    if (!cell.has(k)) cell.set(k, []);
+    cell.get(k)!.push(i);
+  });
+  NODES.forEach((a, i) => {
+    const cx = Math.floor(a.p.x / 2);
+    const cz = Math.floor(a.p.z / 2);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        for (const j of cell.get(`${cx + dx},${cz + dz}`) ?? []) {
+          if (j <= i) continue;
+          if (dist(a.p, NODES[j].p) > 1.5 || !pathClear(a.p, NODES[j].p)) continue;
+          a.n.push(j);
+          NODES[j].n.push(i);
+        }
+      }
+    }
+  });
+}
+
+/** Số điểm và số vùng liền nhau của lưới (để kiểm tra: phải là 1 vùng). */
+export function navStats(): { nodes: number; components: number } {
+  const seen = new Int32Array(NODES.length).fill(-1);
+  let comp = 0;
+  for (let s = 0; s < NODES.length; s++) {
+    if (seen[s] >= 0) continue;
+    const q = [s];
+    seen[s] = comp;
+    while (q.length) {
+      const u = q.pop()!;
+      for (const v of NODES[u].n) if (seen[v] < 0) {
+        seen[v] = comp;
+        q.push(v);
+      }
+    }
+    comp++;
+  }
+  return { nodes: NODES.length, components: comp };
 }
 
 function nearestNode(p: V2): number {
   let best = -1;
   let bd = Infinity;
+  // Ưu tiên điểm gần mà đi thẳng tới được
   NODES.forEach((node, i) => {
     const d = dist(p, node.p);
-    if (d < bd && pathClear(p, node.p)) {
+    if (d < bd && d < 4 && pathClear(p, node.p)) {
       bd = d;
       best = i;
     }
@@ -142,60 +178,194 @@ function nearestNode(p: V2): number {
   return best;
 }
 
-function bfs(a: number, b: number): number[] {
+/** Đường ngắn nhất giữa hai điểm của lưới (A*, hàng đợi ưu tiên dạng đống nhị phân). */
+function shortest(a: number, b: number): number[] {
   if (a === b) return [a];
-  const prev = new Map<number, number>([[a, -1]]);
-  const q = [a];
-  while (q.length) {
-    const cur = q.shift()!;
-    if (cur === b) break;
-    for (const nb of NODES[cur].n) {
-      if (!prev.has(nb)) {
-        prev.set(nb, cur);
-        q.push(nb);
+  const n = NODES.length;
+  const g = new Float64Array(n).fill(Infinity);
+  const prev = new Int32Array(n).fill(-1);
+  const closed = new Uint8Array(n);
+  const goal = NODES[b].p;
+  const heap: [number, number][] = []; // [f, nút]
+  const push = (f: number, i: number) => {
+    heap.push([f, i]);
+    let c = heap.length - 1;
+    while (c > 0) {
+      const p = (c - 1) >> 1;
+      if (heap[p][0] <= heap[c][0]) break;
+      [heap[p], heap[c]] = [heap[c], heap[p]];
+      c = p;
+    }
+  };
+  const pop = (): number => {
+    const top = heap[0][1];
+    const last = heap.pop()!;
+    if (heap.length) {
+      heap[0] = last;
+      let c = 0;
+      for (;;) {
+        const l = c * 2 + 1;
+        const r = l + 1;
+        let m = c;
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l;
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r;
+        if (m === c) break;
+        [heap[m], heap[c]] = [heap[c], heap[m]];
+        c = m;
+      }
+    }
+    return top;
+  };
+  g[a] = 0;
+  push(dist(NODES[a].p, goal), a);
+  while (heap.length) {
+    const u = pop();
+    if (u === b) break;
+    if (closed[u]) continue;
+    closed[u] = 1;
+    for (const v of NODES[u].n) {
+      const nd = g[u] + dist(NODES[u].p, NODES[v].p);
+      if (nd < g[v]) {
+        g[v] = nd;
+        prev[v] = u;
+        push(nd + dist(NODES[v].p, goal), v);
       }
     }
   }
-  if (!prev.has(b)) return [a];
+  if (g[b] === Infinity) return [a];
   const path: number[] = [];
-  for (let c = b; c !== -1; c = prev.get(c)!) path.unshift(c);
+  for (let c = b; c !== -1; c = prev[c]) path.unshift(c);
   return path;
 }
 
 export function planPath(from: V2, to: V2): V2[] {
   if (pathClear(from, to)) return [{ ...to }];
-  const ids = bfs(nearestNode(from), nearestNode(to));
-  const pts = ids.map((i) => ({ ...NODES[i].p }));
+  const pts = shortest(nearestNode(from), nearestNode(to)).map((i) => ({ ...NODES[i].p }));
   const last = pts.length ? pts[pts.length - 1] : from;
   if (pathClear(last, to)) pts.push({ ...to });
-  return pts;
+  // Cắt góc: từ mỗi điểm đi thẳng tới điểm xa nhất còn đi thẳng được (đi tự nhiên, không zig-zag theo lưới)
+  const out: V2[] = [];
+  let cur = from;
+  let i = 0;
+  while (i < pts.length) {
+    let j = pts.length - 1;
+    while (j > i && !pathClear(cur, pts[j])) j--;
+    out.push(pts[j]);
+    cur = pts[j];
+    i = j + 1;
+  }
+  return out;
 }
 
-/** Lộ trình tuần tra: đi zig-zag qua từng làn. */
-export const ROUTE: V2[] = (() => {
-  const xs = [NAV_X[0], NAV_X[NAV_X.length - 1]];
-  const r: V2[] = [];
-  NAV_Z.forEach((z, j) => (j % 2 === 0 ? xs : [xs[1], xs[0]]).forEach((x) => r.push({ x, z })));
-  return r;
-})();
+// ---- Lộ trình tuần tra: mỗi đêm một kiểu ----
 
-/** Đưa điểm nghi ngờ về chỗ Người Kiểm Kê đi tới được (trong khu bán hàng, ngoài kệ). */
-function walkablePoint(p: V2): V2 {
-  const s = { x: clamp(p.x, COOLERS.maxX + 0.8, CHILLERS.minX - 0.6), z: clamp(p.z, STORE.backZ + 1.0, STORE.d - 0.8) };
-  for (const sh of SHELVES) {
-    if (inBox(s, inflate(sh.box, 0.35))) s.z = s.z < sh.zc ? sh.box.minZ - 0.6 : sh.box.maxZ + 0.6;
+/** Một điểm trên lộ trình. peek: tới nơi thì dừng lại ngó theo hướng này (rad), vd. ngó vào cửa phòng. */
+export interface Waypoint extends V2 { peek?: number }
+
+export const ROUTE_STYLES = ['zigzag', 'vong_ngoai', 'khu_lanh', 'doc', 'ngau_nhien'] as const;
+export type RouteStyle = (typeof ROUTE_STYLES)[number];
+export const ROUTE_NAMES: Record<RouteStyle, string> = {
+  zigzag: 'Zig-zag qua từng làn kệ',
+  vong_ngoai: 'Vòng ngoài, ngó vào cửa các phòng',
+  khu_lanh: 'Quanh khu hàng lạnh và quầy',
+  doc: 'Đi dọc các làn lớn',
+  ngau_nhien: 'Không theo thứ tự',
+};
+
+const NORTH = Math.PI; // hướng nhìn về phía bắc (vào các phòng khu sau)
+const { W, XC, XE, XK, XK2, NZ, SZ, AW, AM } = LANES;
+/** Đứng trước cửa các phòng không phải khu lấy hàng, ngó vào trong. */
+const DOOR_PEEKS: Waypoint[] = ROOMS.filter((r) => !r.safe && r.name !== 'PHÒNG KIỂM KÊ').map((r) => ({ x: r.door.x, z: NZ, peek: NORTH }));
+
+/** Dựng lộ trình theo kiểu, có đảo chiều và điểm bắt đầu ngẫu nhiên. */
+export function buildRoute(style: RouteStyle, rng: () => number): Waypoint[] {
+  let r: Waypoint[] = [];
+  const zig = (zs: number[], a: number, b: number) =>
+    zs.forEach((z, j) => (j % 2 === 0 ? [a, b] : [b, a]).forEach((x) => r.push({ x, z })));
+  switch (style) {
+    case 'zigzag':
+      zig(AW, W, XC);
+      zig([...AM].reverse(), XC, XE);
+      r.push({ x: XK, z: 29.0 }, { x: XK2, z: 29.0 }, { x: XK2, z: 16.25 }, { x: XK, z: 22.75 }, { x: XK, z: 10.5 }, { x: XK2, z: 10.5 });
+      break;
+    case 'vong_ngoai':
+      r = [
+        { x: W, z: NZ }, ...DOOR_PEEKS.slice().sort((a, b) => a.x - b.x), { x: XK2, z: NZ }, { x: XK2, z: 19.5 }, { x: XK2, z: SZ },
+        { x: XE, z: SZ }, { x: XC, z: SZ }, { x: W, z: SZ }, { x: W, z: 19.5 },
+      ];
+      break;
+    case 'khu_lanh':
+      r = [
+        { x: XE, z: NZ }, { x: XK, z: 12.0 }, { x: XK2, z: 16.25 }, { x: XK, z: 19.5 }, { x: XK2, z: 22.75 }, { x: XK, z: 26.0 },
+        { x: XK2, z: SZ }, { x: 36.0, z: SZ }, { x: XE, z: SZ }, { x: XE, z: AM[2] }, { x: XC, z: AM[2] }, { x: XC, z: AW[2] },
+        { x: W, z: AW[2] }, { x: XC, z: AW[2] }, { x: XE, z: AM[1] },
+      ];
+      break;
+    case 'doc':
+      r = [
+        { x: W, z: NZ }, { x: W, z: SZ }, { x: XC, z: SZ }, { x: XC, z: NZ }, { x: XE, z: NZ }, { x: XE, z: SZ },
+        { x: XK2, z: SZ }, { x: XK2, z: NZ }, ...DOOR_PEEKS.slice().sort((a, b) => b.x - a.x),
+      ];
+      break;
+    case 'ngau_nhien': {
+      const pool: Waypoint[] = [...DOOR_PEEKS];
+      for (const x of [W, XC, XE, XK, XK2]) for (const z of [NZ, ...AW, ...AM, SZ]) pool.push({ x, z });
+      const walk = pool.filter((p) => !MOVE_INFLATED.some((b) => inBox(p, b)));
+      const pick: Waypoint[] = [];
+      while (pick.length < 12 && walk.length) pick.push(walk.splice(Math.floor(rng() * walk.length), 1)[0]);
+      // Xếp điểm gần nhau đi trước (đỡ đi qua đi lại cả siêu thị), nhưng thứ tự vẫn khác mỗi lần
+      r = [pick.shift()!];
+      while (pick.length) {
+        const last = r[r.length - 1];
+        pick.sort((a, b) => dist(last, a) - dist(last, b));
+        r.push(pick.shift()!);
+      }
+      break;
+    }
   }
-  if (inBox(s, inflate(COUNTER, 0.4))) s.x = COUNTER.minX - 0.6;
-  for (const f of FREEZERS) {
-    if (inBox(s, inflate(f, 0.4))) s.z = s.z < (f.minZ + f.maxZ) / 2 ? f.minZ - 0.6 : f.maxZ + 0.6;
+  r = r.filter((p) => !MOVE_INFLATED.some((b) => inBox(p, b)));
+  if (rng() < 0.5) r.reverse();
+  const k = Math.floor(rng() * r.length);
+  return [...r.slice(k), ...r.slice(0, k)];
+}
+
+/** Đẩy điểm ra khỏi vật cản (ra mép gần nhất). */
+function pushOut(s: V2): V2 {
+  for (let pass = 0; pass < 3; pass++) {
+    for (const o of MOVE_INFLATED) {
+      if (!inBox(s, o)) continue;
+      const d = [s.x - o.minX, o.maxX - s.x, s.z - o.minZ, o.maxZ - s.z];
+      const m = d.indexOf(Math.min(...d));
+      if (m === 0) s.x = o.minX - 0.15;
+      else if (m === 1) s.x = o.maxX + 0.15;
+      else if (m === 2) s.z = o.minZ - 0.15;
+      else s.z = o.maxZ + 0.15;
+    }
   }
   return s;
 }
 
+/**
+ * Đưa điểm nghi ngờ về chỗ Người Kiểm Kê đi tới được.
+ * Tiếng động trong một phòng thường: điểm nằm trong phòng đó. Trong khu lấy hàng (kho, kho lạnh): chỉ tới trước cửa ngó vào.
+ */
+function walkablePoint(p: V2, src: V2 = p): V2 {
+  const room = roomAt(src);
+  if (room?.safe) return { x: room.door.x, z: STORE.backZ + 1.0 };
+  if (room) {
+    const b = room.box;
+    return pushOut({ x: clamp(p.x, b.minX + 0.7, b.maxX - 0.7), z: clamp(p.z, 0.7, STORE.backZ - 0.7) });
+  }
+  return pushOut({ x: clamp(p.x, 1.4, STORE.w - 1.4), z: clamp(p.z, STORE.backZ + 0.9, STORE.d - 0.8) });
+}
+
 export class Auditor {
   pos: V2;
-  heading = Math.PI; // nhìn về phía bắc lúc còn trong kho
-  beam = Math.PI;
+  heading = 0; // đứng sau bàn văn phòng, nhìn ra cửa (phía nam)
+  beam = 0;
+  /** Kiểu lộ trình đêm nay (mỗi đêm một kiểu, Game chọn). */
+  routeStyle: RouteStyle;
+  route: Waypoint[];
   state: AuditorState = 'idle';
   tune: AuditorTuning;
   suspicion: V2 | null = null;
@@ -225,13 +395,16 @@ export class Auditor {
   private stepT = 0;
   private beepT = 0;
   private routeIdx = 0;
-  private routeDir = 1;
   private pauseT = 0;
+  /** Đang dừng ngó vào một hướng (vd. cửa kho), null nếu chỉ đứng quay quanh. */
+  private peekDir: number | null = null;
 
-  constructor(tune: AuditorTuning, rng: () => number) {
+  constructor(tune: AuditorTuning, rng: () => number, routeStyle: RouteStyle = 'zigzag') {
     this.tune = tune;
     this.rng = rng;
     this.pos = { ...AUDITOR_SPAWN };
+    this.routeStyle = routeStyle;
+    this.route = buildRoute(routeStyle, rng);
   }
 
   get countProgress(): number {
@@ -259,9 +432,10 @@ export class Auditor {
 
   activate(): void {
     if (this.state !== 'idle') return;
+    // Từ sau bàn văn phòng đi ra, qua đúng cửa văn phòng
     this.state = 'enter';
-    this.heading = 0;
-    this.path = [{ ...AUDITOR_DOOR }];
+    this.stateT = 0;
+    this.path = planPath(this.pos, AUDITOR_DOOR);
   }
 
   /** Thả người đang bị đếm (dùng khi bật "không chết" để thử): đứng tìm quanh đó. */
@@ -275,7 +449,7 @@ export class Auditor {
     this.path = [];
   }
 
-  /** Cho về kho nghỉ (biến mất khỏi khu bán hàng) cho đến khi activate() lần nữa. */
+  /** Cho về văn phòng đứng chờ sau bàn cho đến khi activate() lần nữa. */
   retire(): void {
     // Đang bê thùng thì coi như đã cất xong ngay
     if (this.capture && (this.state === 'boxing' || this.state === 'carry' || this.state === 'store')) {
@@ -284,8 +458,8 @@ export class Auditor {
     this.capture = null;
     this.state = 'idle';
     this.pos = { ...AUDITOR_SPAWN };
-    this.heading = Math.PI;
-    this.beam = Math.PI;
+    this.heading = 0;
+    this.beam = 0;
     this.path = [];
     this.suspicion = null;
     this.urgent = false;
@@ -293,6 +467,7 @@ export class Auditor {
   }
 
   canSee(p: V2): boolean {
+    if (inSafeRoom(p)) return false; // kho, kho lạnh: khu lấy hàng, không kiểm đếm
     const d = dist(this.pos, p);
     if (d < 0.9) return true;
     if (d > this.range) return false;
@@ -308,7 +483,7 @@ export class Auditor {
     if (dist(this.pos, src) > eff) return null;
     const ang = this.rng() * Math.PI * 2;
     const mag = error * (0.4 + 0.6 * this.rng());
-    const s = walkablePoint({ x: src.x + Math.sin(ang) * mag, z: src.z + Math.cos(ang) * mag });
+    const s = walkablePoint({ x: src.x + Math.sin(ang) * mag, z: src.z + Math.cos(ang) * mag }, src);
     this.suspicion = s;
     this.state = 'alert';
     this.stateT = 0;
@@ -320,7 +495,7 @@ export class Auditor {
 
   /** Khi mất điện, ánh đèn pin trong tầm mắt (rộng hơn tia quét) làm nó chú ý. */
   seesLight(p: V2): boolean {
-    if (dist(this.pos, p) > this.tune.lightSight) return false;
+    if (inSafeRoom(p) || dist(this.pos, p) > this.tune.lightSight) return false;
     if (Math.abs(wrapAngle(headingTo(this.pos, p) - this.heading)) > 1.15) return false;
     return hasLOS(this.pos, p);
   }
@@ -375,7 +550,7 @@ export class Auditor {
     if (this.blackout && alive && lightOn && this.lightCd <= 0 && this.state !== 'alert' && this.seesLight(player)) {
       this.lightCd = 2;
       const ang = this.rng() * Math.PI * 2;
-      const s = walkablePoint({ x: player.x + Math.sin(ang), z: player.z + Math.cos(ang) });
+      const s = walkablePoint({ x: player.x + Math.sin(ang), z: player.z + Math.cos(ang) }, player);
       this.suspicion = s;
       this.urgent = true;
       if (this.state === 'investigate') {
@@ -396,8 +571,9 @@ export class Auditor {
       case 'patrol':
         if (this.pauseT > 0) {
           this.pauseT -= dt;
-          this.heading = wrapAngle(this.heading + dt * 0.6);
-          this.sweep(0.7, 1.1);
+          if (this.peekDir !== null) this.heading = turnToward(this.heading, this.peekDir, 3 * dt);
+          else this.heading = wrapAngle(this.heading + dt * 0.6);
+          this.sweep(this.peekDir !== null ? 0.5 : 0.7, 1.1);
           break;
         }
         if (this.follow(dt, this.tune.speed * (1 + 0.3 * this.drift))) this.advanceRoute();
@@ -485,8 +661,8 @@ export class Auditor {
         this.heading = turnToward(this.heading, h, 6 * dt);
         this.beam = turnToward(this.beam, h, 6 * dt);
         if (this.stateT >= BOXING_TIME) {
-          // Bê thùng về kho: ra lối giữa, qua cửa kho rồi tới chỗ đặt
-          this.path = [...planPath(this.pos, AUDITOR_DOOR), { x: AUDITOR_DOOR.x, z: 5.0 }, { ...c.stand }];
+          // Vác thùng về kho: lưới đường đi bắt buộc đi qua đúng ô cửa kho
+          this.path = planPath(this.pos, c.stand);
           this.setState('carry');
           this.events.push({ type: 'boxed', at: { ...c.at } });
         }
@@ -537,7 +713,7 @@ export class Auditor {
   private startPatrol(): void {
     let best = 0;
     let bd = Infinity;
-    ROUTE.forEach((p, i) => {
+    this.route.forEach((p, i) => {
       const d = dist(this.pos, p);
       if (d < bd) {
         bd = d;
@@ -545,25 +721,27 @@ export class Auditor {
       }
     });
     this.routeIdx = best;
-    this.path = planPath(this.pos, ROUTE[best]);
+    this.peekDir = null;
+    this.path = planPath(this.pos, this.route[best]);
     this.urgent = false;
     this.state = 'patrol';
     this.stateT = 0;
   }
 
+  /** Tới một điểm trên lộ trình: ngó vào (nếu là điểm ngó), có khi dừng đứng quét, rồi đi điểm kế (lộ trình vòng tròn). */
   private advanceRoute(): void {
-    if (this.rng() < 0.3) this.pauseT = 1.5 + this.rng() * 1.5;
-    if (this.rng() < 0.2) {
-      this.routeIdx = Math.floor(this.rng() * ROUTE.length);
-    } else {
-      let next = this.routeIdx + this.routeDir;
-      if (next < 0 || next >= ROUTE.length) {
-        this.routeDir *= -1;
-        next = this.routeIdx + this.routeDir;
-      }
-      this.routeIdx = next;
+    const here = this.route[this.routeIdx];
+    this.peekDir = null;
+    if (here.peek !== undefined) {
+      this.peekDir = here.peek;
+      this.pauseT = 2.0 + this.rng() * 1.5;
+    } else if (this.rng() < 0.25) {
+      this.pauseT = 1.5 + this.rng() * 1.5;
     }
-    this.path = planPath(this.pos, ROUTE[this.routeIdx]);
+    // Thỉnh thoảng bỏ ngang, nhảy tới một điểm bất kỳ: không học thuộc được lộ trình
+    if (this.rng() < 0.15) this.routeIdx = Math.floor(this.rng() * this.route.length);
+    else this.routeIdx = (this.routeIdx + 1) % this.route.length;
+    this.path = planPath(this.pos, this.route[this.routeIdx]);
   }
 
   private goInvestigate(target: V2): void {

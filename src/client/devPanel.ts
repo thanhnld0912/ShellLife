@@ -5,8 +5,8 @@
 // - Lịch sự kiện + thông số Người Kiểm Kê + người chơi: lưu trong trình duyệt, áp dụng cho các ca sau.
 // - Nhật ký: mọi sự kiện trong ca kèm giờ trong game, để ghi nhận xét chơi thử.
 
-import type { AuditorTuning } from '../sim/auditor.ts';
-import { DEFAULT_EVENTS, MAX_NIGHTS, type EventConfig, type Game } from '../sim/game.ts';
+import { ROUTE_NAMES, type AuditorTuning } from '../sim/auditor.ts';
+import { DEFAULT_EVENTS, LATE_IN_PENALTY, MAX_NIGHTS, type EventConfig, type Game } from '../sim/game.ts';
 import { REAL_PER_MIN, SHIFT_MINUTES, clockOf, type OrderKind } from '../sim/shift.ts';
 import type { World } from '../render/world.ts';
 import type { PlayerController } from './player.ts';
@@ -179,10 +179,11 @@ export class DevPanel {
     const s = this.saved;
     const ev = g.eventCfg;
     const p = { ...PLAYER_DEFAULTS, ...s.player };
-    const bo = g.blackout;
     const boText = !ev.blackoutAuto || g.night < ev.blackoutFromNight
       ? 'Đêm này không tự mất điện'
-      : bo ? `Đêm này mất điện ${clockOf(bo.start)} → ${clockOf(bo.end)}` : '';
+      : g.blackouts.length
+        ? `Đêm này mất điện ${g.blackouts.length} lần: ${g.blackouts.map((b) => `${clockOf(b.start)}→${clockOf(b.end)}`).join(' · ')}`
+        : '';
     const ts = this.host.timeScale;
     const nightBtns = Array.from({ length: MAX_NIGHTS }, (_, i) =>
       `<button data-act="night" data-n="${i + 1}" class="${g.night === i + 1 ? 'on' : ''}">${i + 1}</button>`).join('');
@@ -198,7 +199,7 @@ export class DevPanel {
       </header>
       <div class="state">
         <span>Đêm ${g.night}/${MAX_NIGHTS} · ${g.shift.clock()}</span>
-        <span>Kiểm kê viên: <b>${a.state}</b></span>
+        <span>Kiểm kê viên: <b>${a.state}</b> · lộ trình: ${ROUTE_NAMES[a.routeStyle]}</span>
         <span>Điện: <b class="${g.power ? '' : 'bad'}">${g.power ? 'có' : 'MẤT'}</b></span>
         <span>Công ${g.shift.cong}/${g.shift.quota}</span>
         <span>Phiếu mở: ${g.shift.openOrders.length} · trễ ${g.shift.lateCount}</span>
@@ -210,7 +211,7 @@ export class DevPanel {
         <div class="btns">
           <button data-act="power">${g.power ? 'Mất điện ngay' : 'Có điện lại'}</button>
           <button data-act="auditor-now" ${a.state !== 'idle' ? 'disabled' : ''}>Gọi Người Kiểm Kê vào</button>
-          <button data-act="auditor-rest" ${a.state === 'idle' ? 'disabled' : ''}>Cho về kho nghỉ</button>
+          <button data-act="auditor-rest" ${a.state === 'idle' ? 'disabled' : ''}>Cho về văn phòng</button>
           <button data-act="lure">Dụ tới chỗ tôi</button>
         </div>
         <div class="row"><input id="dev-say" placeholder="Câu cho loa phát…" maxlength="160"><button data-act="say">Phát loa</button></div>
@@ -243,7 +244,14 @@ export class DevPanel {
         <label class="sl${s.events.auditorStart !== undefined ? ' ch' : ''}"><span>Người Kiểm Kê vào lúc</span>
           <input type="range" data-ev="auditorStart" min="0" max="120" step="5" value="${ev.auditorStart}">
           <b>${clockOf(ev.auditorStart)}</b></label>
-        <label class="ck"><input type="checkbox" data-ev="blackoutAuto" ${ev.blackoutAuto ? 'checked' : ''}> Tự mất điện mỗi đêm một lần (00:00–03:00)</label>
+        <label class="ck"><input type="checkbox" data-ev="clockInRequired" ${ev.clockInRequired ? 'checked' : ''}> Phải chấm công vào ca mới được làm việc</label>
+        <label class="sl${s.events.clockInBy !== undefined ? ' ch' : ''}"><span>Hạn chấm công vào ca</span>
+          <input type="range" data-ev="clockInBy" min="5" max="90" step="5" value="${ev.clockInBy}">
+          <b>${clockOf(ev.clockInBy)} · trễ trừ ${LATE_IN_PENALTY} công</b></label>
+        <label class="ck"><input type="checkbox" data-ev="blackoutAuto" ${ev.blackoutAuto ? 'checked' : ''}> Tự mất điện (đêm đầu 1 lần, mỗi đêm sau thêm 1 lần)</label>
+        <label class="sl${s.events.blackoutMax !== undefined ? ' ch' : ''}"><span>Tối đa mỗi đêm</span>
+          <input type="range" data-ev="blackoutMax" min="1" max="5" step="1" value="${ev.blackoutMax}">
+          <b>${ev.blackoutMax} lần</b></label>
         <label class="sl${s.events.blackoutFromNight !== undefined ? ' ch' : ''}"><span>Mất điện từ đêm</span>
           <input type="range" data-ev="blackoutFromNight" min="1" max="${MAX_NIGHTS}" step="1" value="${ev.blackoutFromNight}">
           <b>${ev.blackoutFromNight}</b></label>

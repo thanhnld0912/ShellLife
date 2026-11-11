@@ -14,12 +14,12 @@
   {
     "file": "nguoi_kiem_ke.glb",
     "ten": "Người Kiểm Kê",
-    "mo_ta": "Cao 2,05 m, gầy, đầu không mặt luôn cúi, tay trái dài quá hông, tay phải cầm máy quét ở độ cao 1,25 m (khớp SCANNER_Y). Thẻ tên để trống.",
-    "tris": 572,
+    "mo_ta": "Cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối (vạt áo bay theo bước chân), cà vạt đỏ sẫm. Đầu trơn không mặt, chỗ mắt là nhãn mã vạch. Tay phải dài quá gối, 3 ngón dài. Tay trái cầm máy quét kiểu súng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.",
+    "tris": 972,
     "kich_thuoc_m": [
-      0.649,
-      2.11,
-      0.713
+      0.579,
+      2.161,
+      0.728
     ],
     "chuyen_dong": [
       {
@@ -51,9 +51,29 @@
         "ten": "dem",
         "nhan": "Đếm \"Một… Hai…\"",
         "lap": true
+      },
+      {
+        "ten": "lao_toi",
+        "nhan": "Lao tới chộp người (đếm xong)",
+        "lap": true
+      },
+      {
+        "ten": "bat",
+        "nhan": "Bắt và đóng thùng: úp thùng, ấn bẹp, dán băng keo, quét mã, nhấc lên vai",
+        "lap": false
+      },
+      {
+        "ten": "vac_hop",
+        "nhan": "Vác thùng trên vai về kho",
+        "lap": true
+      },
+      {
+        "ten": "dat_hop",
+        "nhan": "Đặt thùng xuống ô trong kho",
+        "lap": false
       }
     ],
-    "kb": 158.1
+    "kb": 276.0
   },
   {
     "file": "nhan_vien.glb",

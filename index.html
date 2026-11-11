@@ -45,7 +45,7 @@
             <li><b>WASD</b> đi · <b>Shift</b> chạy (ồn)</li>
             <li><b>E</b> lấy thùng / xếp hàng / ghi nhiệt độ</li>
             <li><b>Giữ F</b> quét kệ (máy quét kêu bíp)</li>
-            <li><b>Q</b> ném lon nước để dụ nó · <b>E</b> nhặt lại (06:00 mỗi lon còn trên sàn bị trừ 1 công)</li>
+            <li><b>Giữ Q</b> ngắm (hiện đường bay và chỗ lon rơi), <b>thả Q</b> ném lon để dụ nó · <b>E</b> nhặt lại (06:00 mỗi lon còn trên sàn bị trừ 1 công)</li>
             <li><b>T</b> đèn pin (khi mất điện) · <b>G</b> thả thùng để chạy</li>
             <li><b>Tab</b> phiếu việc · <b>F3</b> thông tin gỡ lỗi</li>
             <li><b>P</b> bảng sự kiện (chơi thử: mất điện, tua giờ, chỉnh thông số)</li>
@@ -53,7 +53,8 @@
           <ul>
             <li>Quét kệ: 2 công · xếp kệ thiếu hàng: 1 công · xếp tủ lạnh HẾT HÀNG (thùng xốp ở KHO LẠNH): 2 công</li>
             <li>Ghi nhiệt độ ở kho lạnh: 1 công, việc an toàn chỉ tính tối đa nửa chỉ tiêu</li>
-            <li>06:00 phải có mặt ở <b>máy chấm công</b> (cửa nhân viên, trong kho)</li>
+            <li><b>Đầu ca</b> bạn ở PHÒNG NGHỈ: chạy tới <b>máy chấm công</b> trong KHO để vào ca trước 22:30 (trễ trừ 2 công). 06:00 quay lại đó điểm danh.</li>
+            <li><b>KHO và KHO LẠNH là khu lấy hàng:</b> đứng trong đó kiểm kê viên không kiểm đếm được bạn.</li>
             <li>Thiếu công hoặc vắng điểm danh: thẻ bị bấm 1 lỗ. 3 lỗ là hết.</li>
             <li><b>Chỉ tiêu chỉ là mức tối thiểu.</b> Suốt ca máy in giao thêm phiếu việc có hạn giờ. Trễ hạn: bị bấm lỗ, và siêu thị tối dần.</li>
             <li>Vượt 150% chỉ tiêu: nhận phiếu khen, tự xoá lỗ kế tiếp.</li>
@@ -63,6 +64,16 @@
         <div class="start-row">
           <input id="name" maxlength="14" placeholder="Minh" autocomplete="off" />
           <button id="start">Nhận ca</button>
+        </div>
+        <div class="quality-row">
+          <label for="quality">Đồ hoạ</label>
+          <select id="quality">
+            <option value="auto">Tự động</option>
+            <option value="thap">Thấp (máy yếu)</option>
+            <option value="vua">Vừa</option>
+            <option value="cao">Cao</option>
+          </select>
+          <span id="quality-info"></span>
         </div>
         <p class="note">Nên đeo tai nghe. Loa dùng giọng tiếng Việt của trình duyệt nếu máy có; nếu không, chỉ hiện chữ.</p>
       </div>

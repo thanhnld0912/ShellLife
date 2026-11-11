@@ -138,6 +138,7 @@ export class Hud {
       <div class="sm">In lúc 06:00</div><hr>
       ${row('Nhân viên', esc(g.name.toUpperCase()))}
       ${ev.litterPenalty ? row(`Trừ ${ev.litterLeft} lon nước để lại trên sàn`, `${ev.congBeforeLitter} − ${ev.litterPenalty}`, 'bad') : ''}
+      ${ev.lateInPenalty ? row('Chấm công vào ca trễ', `− ${ev.lateInPenalty}`, 'bad') : ''}
       ${row('Công', `${ev.cong}/${ev.quota}`, ev.cong >= ev.quota ? 'good' : 'bad')}
       ${row('Công an toàn', `${Math.min(ev.safeEarned, ev.safeCap)}/${ev.safeCap}`)}
       ${row('Phiếu việc', `${ev.ordersDone}/${ev.ordersTotal} xong${ev.late ? ` · ${ev.late} trễ` : ''}`, ev.late ? 'bad' : ev.ordersTotal ? 'good' : '')}

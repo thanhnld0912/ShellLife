@@ -3,11 +3,13 @@
 import * as THREE from 'three';
 import type { AABB, V2 } from '../sim/geometry.ts';
 import {
-  BOX_PILE, CHILLERS, COLD_PILE, COLD_UNITS, COOLERS, COUNTER, FREEZER_PANEL, NAV_X, STAFF_DOOR, TIME_CLOCK, GLASS, NAV_Z, ROOMS, SECTIONS, SHELF_HEIGHT, SHELF_MID, SHELF_X0,
-  SHELF_X1, SHELVES, STORE, WALLS, sectionById, storageSlot,
+  AUDIT_CABINETS, BOX_PILE, BREAK_TABLE, CHILLERS, COLD_PILE, COLD_UNITS, COOLERS, COUNTER, FREEZER_PANEL, GLASS, LIGHT_TUBES,
+  OFFICE_DESK, PALLETS, PALLET_H, ROOMS, SECTIONS, SHELF_HEIGHT, SHELF_MODULE, SHELVES, STAFF_DOOR, STORE, TIME_CLOCK, WALLS,
+  roomByName, sectionById, storageSlot,
 } from '../sim/layout.ts';
 import { labelPlane, labelSign } from './labels.ts';
 import { playClip, type ModelInstance, type ModelLib, type ModelName } from './models.ts';
+import { QUALITY, type QualitySettings } from './quality.ts';
 
 /** Hàng tồn đầu đêm (Shift thoả kiểu này). */
 export interface NightStock {
@@ -57,7 +59,6 @@ const PALETTE = [0xd94b3d, 0xe8a33c, 0xf2d04b, 0x5fae5b, 0x3f88c5, 0x8e5bb5, 0xe
 const BOARD_YS = [0.12, 0.56, 1.0, 1.44, 1.88];
 /** Mặt trên các tầng kệ trong model ke_hang.glb (tầng ở 0,16 m, dày 3 cm). */
 const MODEL_BOARD_TOPS = [0.175, 0.615, 1.055, 1.495, 1.935];
-const SHELF_MODULE = 1.3;
 const PRODUCTS: ModelName[] = ['hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua'];
 const HIDDEN = new THREE.MeshBasicMaterial({ visible: false });
 
@@ -86,12 +87,29 @@ function floorTexture(): THREE.CanvasTexture {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(12, 12);
+  t.repeat.set(STORE.w / 3, STORE.d / 3);
   return t;
 }
 
-export function buildWorld(playerName: string, models: ModelLib | null = null): World {
+/** Vầng sáng giả (không phải đèn thật): một tấm phát sáng cộng màu, gần như không tốn gì khi vẽ. */
+function glowTexture(): THREE.CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d')!;
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+export function buildWorld(playerName: string, models: ModelLib | null = null, q: QualitySettings = QUALITY.cao): World {
   const has = (n: ModelName) => !!models?.has(n);
+  /** Hàng hoá: model chi tiết, hoặc khối hộp đơn giản ở mức đồ hoạ Thấp. */
+  const goodsMesh = (p: ModelName, mats: THREE.Matrix4[]) =>
+    q.proxyGoods ? models!.instancedProxy(p, mats) : models!.instanced(p, mats, { shadow: false });
   const mixers: THREE.AnimationMixer[] = [];
   /** Hàng trong từng tủ lạnh (mã tủ → các instance), để cho tủ hết hàng / xếp lại. */
   const coldItems = new Map<string, { im: THREE.InstancedMesh; i: number; m: THREE.Matrix4 }[]>();
@@ -101,7 +119,8 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   })();
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0b0f10);
-  scene.fog = new THREE.Fog(0x0b0f10, 14, 44);
+  const fogFar = Math.min(44, q.far);
+  scene.fog = new THREE.Fog(0x0b0f10, fogFar * 0.32, fogFar);
 
   const raySolids: THREE.Object3D[] = [];
   const shelfHits: THREE.Mesh[] = [];
@@ -126,16 +145,21 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   const hemi = add(new THREE.HemisphereLight(0xdcebe5, 0x111615, 0.75));
   powered.push([hemi, 0.75, 0.03, -2]); // -2: ánh sáng nền, tối đi đều theo độ lệch sổ
   powered.push([add(new THREE.AmbientLight(0xffffff, 0.12)), 0.12, 0.015, -2]);
-  // 8 đèn trần khu bán hàng (lưới 4 × 2), tầm 15 m
-  const lamps = [7, 15, 23, 31].flatMap((x) => [12.5, 22.5].map((z) => ({ x, z })));
+  // Đèn trần khu bán hàng: 8 đèn (lưới 4 × 2, tầm 15 m) hoặc 4 đèn mạnh hơn, tầm xa hơn cho máy yếu.
+  // Mỗi đèn điểm làm mọi điểm ảnh phải tính thêm một lần: càng ít đèn càng nhẹ.
+  const lampXs = q.lamps === 8 ? [7, 18, 29, 39] : [11, 33];
+  const lampPower = q.lamps === 8 ? 10 : 17;
+  const lamps = lampXs.flatMap((x) => [14, 26].map((z) => ({ x, z })));
   const lampSteps = driftSteps(lamps);
   lamps.forEach(({ x, z }, i) => {
-    const l = new THREE.PointLight(0xe4fff4, 9, 15, 1.2);
+    const l = new THREE.PointLight(0xe4fff4, lampPower, q.lamps === 8 ? 16 : 23, 1.2);
     l.position.set(x, STORE.wallH - 0.25, z);
     add(l);
-    powered.push([l, 9, 0, lampSteps[i]]);
+    powered.push([l, lampPower, 0, lampSteps[i]]);
   });
   for (const r of ROOMS) {
+    // Kho, kho lạnh (lấy hàng) và phòng nghỉ (đầu ca) luôn có đèn; phòng khác chỉ ở mức đồ hoạ Cao
+    if (!q.minorRoomLights && !r.safe && r.name !== 'PHÒNG NGHỈ') continue;
     // Phòng rộng (kho 14 m) cần đèn mạnh và xa hơn để góc máy chấm công không tối hẳn
     const wide = r.box.maxX - r.box.minX > 8;
     const power = wide ? 3.6 : 2.2;
@@ -145,8 +169,11 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     powered.push([l, power, 0, -1]);
   }
   // Đèn lối thoát chạy pin: luôn sáng xanh, chỉ thấy rõ khi mất điện
+  const exitGlowMat = new THREE.MeshBasicMaterial({
+    map: glowTexture(), color: 0x1f8a45, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
   const exits: [number, number, number, number][] = [
-    [18, 2.95, STORE.d - 0.18, Math.PI], // trên cửa chính (mặt kính)
+    [STORE.w / 2, 2.95, STORE.d - 0.18, Math.PI], // trên cửa chính (mặt kính)
     [ROOMS[0].door.x, 2.6, STORE.backZ + 0.12, 0], // cửa kho
     [STORE.w - 0.18, 2.75, 26.5, -Math.PI / 2], // tường đông, cạnh quầy
     [STAFF_DOOR.x, 2.55, 0.12, 0], // trên cửa nhân viên (trong kho)
@@ -156,9 +183,12 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     sign.position.set(x, y, z);
     sign.rotation.y = ry;
     add(sign);
-    const g = new THREE.PointLight(0x3dff7a, 0.9, 5, 1.5);
-    g.position.set(x, y - 0.3, z + (ry === 0 ? 0.3 : ry === Math.PI ? -0.3 : 0) + 0);
-    if (ry === -Math.PI / 2) g.position.x -= 0.3;
+    // Vầng sáng xanh trên tường quanh biển (giả, không phải đèn thật)
+    const g = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.6), exitGlowMat);
+    g.position.set(x, y - 0.1, z);
+    g.rotation.y = ry;
+    g.translateZ(-0.01);
+    g.renderOrder = 2;
     add(g);
   }
 
@@ -190,13 +220,11 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   const tubeOff = new THREE.Color(0x1a1f1e);
   // Mỗi làn một vật liệu riêng để tắt từng dải khi sổ lệch (làn xa quầy tắt trước)
   const laneTubes: [THREE.MeshBasicMaterial, number][] = [];
-  const tubeSteps = driftSteps(NAV_Z.map((z) => ({ x: 18, z })));
-  const tubeX0 = NAV_X[0] - 1;
-  const tubeX1 = NAV_X[NAV_X.length - 1] + 0.6;
-  NAV_Z.forEach((z, i) => {
+  const tubeSteps = driftSteps(LIGHT_TUBES.map(([x0, x1, z]) => ({ x: (x0 + x1) / 2, z })));
+  LIGHT_TUBES.forEach(([x0, x1, z], i) => {
     const m = tubeMat.clone();
-    const t = add(new THREE.Mesh(new THREE.BoxGeometry(tubeX1 - tubeX0, 0.05, 0.14), m));
-    t.position.set((tubeX0 + tubeX1) / 2, STORE.wallH - 0.06, z);
+    const t = add(new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.05, 0.14), m));
+    t.position.set((x0 + x1) / 2, STORE.wallH - 0.06, z);
     laneTubes.push([m, tubeSteps[i]]);
   });
   for (const r of ROOMS) {
@@ -209,26 +237,26 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   const boardMat = lambert(0x8d9794);
   const shelfModel = has('ke_hang');
   if (shelfModel) {
-    // Mỗi dãy 13 m = 10 module 1,3 m
+    // Mỗi dãy ghép từ các module 1,3 m
     const mats: THREE.Matrix4[] = [];
-    const n = Math.round((SHELF_X1 - SHELF_X0) / SHELF_MODULE);
     for (const row of SHELVES) {
-      for (let i = 0; i < n; i++) mats.push(new THREE.Matrix4().makeTranslation(SHELF_X0 + SHELF_MODULE * (i + 0.5), 0, row.zc));
+      const n = Math.round((row.x1 - row.x0) / SHELF_MODULE);
+      for (let i = 0; i < n; i++) mats.push(new THREE.Matrix4().makeTranslation(row.x0 + SHELF_MODULE * (i + 0.5), 0, row.zc));
     }
     add(models!.instanced('ke_hang', mats)!);
   }
   for (const row of SHELVES) {
     const g = new THREE.Group();
     g.visible = !shelfModel;
-    const backPanel = new THREE.Mesh(new THREE.BoxGeometry(SHELF_X1 - SHELF_X0, SHELF_HEIGHT, 0.1), shelfMat);
-    backPanel.position.set(SHELF_MID, SHELF_HEIGHT / 2, row.zc);
+    const backPanel = new THREE.Mesh(new THREE.BoxGeometry(row.x1 - row.x0, SHELF_HEIGHT, 0.1), shelfMat);
+    backPanel.position.set(row.mid, SHELF_HEIGHT / 2, row.zc);
     g.add(backPanel);
     for (const y of [...BOARD_YS, SHELF_HEIGHT - 0.02]) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(SHELF_X1 - SHELF_X0, 0.04, 0.96), boardMat);
-      b.position.set(SHELF_MID, y, row.zc);
+      const b = new THREE.Mesh(new THREE.BoxGeometry(row.x1 - row.x0, 0.04, 0.96), boardMat);
+      b.position.set(row.mid, y, row.zc);
       g.add(b);
     }
-    for (const x of [SHELF_X0 + 0.03, SHELF_MID, SHELF_X1 - 0.03]) {
+    for (const x of [row.x0 + 0.03, row.mid, row.x1 - 0.03]) {
       const p = new THREE.Mesh(new THREE.BoxGeometry(0.06, SHELF_HEIGHT, 1.0), shelfMat);
       p.position.set(x, SHELF_HEIGHT / 2, row.zc);
       g.add(p);
@@ -243,9 +271,8 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     hit.userData = { kind: 'shelf', row: row.id };
     add(hit, true);
     shelfHits.push(hit);
-    // Biển tên dãy ở hai đầu kệ, quay ra hai làn dọc (x 2,5 và x 19): đứng ở làn dọc nhìn vào
-    // thấy số các dãy thẳng hàng cùng độ cao.
-    for (const [x, ry] of [[SHELF_X0 - 0.02, -Math.PI / 2], [SHELF_X1 + 0.02, Math.PI / 2]] as const) {
+    // Biển tên dãy ở hai đầu kệ, quay ra hai làn dọc: đứng ở làn dọc nhìn vào thấy số các dãy cùng độ cao.
+    for (const [x, ry] of [[row.x0 - 0.02, -Math.PI / 2], [row.x1 + 0.02, Math.PI / 2]] as const) {
       const end = labelPlane([`DÃY ${row.id}`], 0.92, 0.4, { bg: '#1e2422', fg: '#f2c94c' });
       end.position.set(x, 2.38, row.zc);
       end.rotation.y = ry;
@@ -295,7 +322,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     }
     for (const p of PRODUCTS) {
       const list = slots.get(p)!;
-      const g = models!.instanced(p, list.map((s) => s.m), { shadow: false });
+      const g = goodsMesh(p, list.map((s) => s.m));
       if (!g) continue;
       add(g);
       for (const im of g.children as THREE.InstancedMesh[]) {
@@ -383,7 +410,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   chillerSign.rotation.y = -Math.PI / 2;
   add(chillerSign);
   const coldZoneSign = labelSign(['KHU HÀNG LẠNH · KEM · ĐỒ ĐÔNG LẠNH'], 3.2, 0.4, { bg: '#16323c', fg: '#bff4ff' });
-  coldZoneSign.position.set(30, STORE.wallH - 0.55, 16);
+  coldZoneSign.position.set(36, STORE.wallH - 0.55, 16.25);
   add(coldZoneSign);
 
   /**
@@ -428,8 +455,9 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     frame(STORE.w, 0.1, STORE.w / 2, 0.05);
     frame(STORE.w, 0.1, STORE.w / 2, 2.35);
     frame(STORE.w, 0.1, STORE.w / 2, H - 0.05);
-    for (const x of [16.5, 18, 19.5]) frame(0.1, 2.3, x, 1.15); // cửa chính 2 cánh
-    for (const x of [17.75, 18.25]) frame(0.04, 0.45, x, 1.1); // tay nắm cửa
+    const cx = STORE.w / 2;
+    for (const x of [cx - 1.5, cx, cx + 1.5]) frame(0.1, 2.3, x, 1.15); // cửa chính 2 cánh
+    for (const x of [cx - 0.25, cx + 0.25]) frame(0.04, 0.45, x, 1.1); // tay nắm cửa
     // Cửa sắt xếp bên ngoài: song đứng + thanh chéo hình thoi (vẽ lên một tấm, phần trống trong suốt)
     const gc = document.createElement('canvas');
     gc.width = 128;
@@ -583,7 +611,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
     }
     for (const p of goods) {
       const list = slots.get(p)!;
-      const g = models!.instanced(p, list.map((s) => s.m), { shadow: false });
+      const g = goodsMesh(p, list.map((s) => s.m));
       if (!g) continue;
       add(g);
       for (const im of g.children as THREE.InstancedMesh[]) {
@@ -614,6 +642,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
 
   // ---- Khu sau: biển phòng ----
   for (const r of ROOMS) {
+    if (r.name === 'PHÒNG KIỂM KÊ') continue; // có biển riêng
     const s = labelPlane([r.name], 1.5, 0.36, { bg: '#1e2422', fg: '#d8f3ec' });
     s.position.set(r.door.x, 2.65, r.door.z + 0.13);
     add(s);
@@ -757,25 +786,116 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   breaker.position.set(roomC('PHÒNG ĐIỆN').x, 1.4, 0.25);
   add(breaker);
 
-  // Phòng nghỉ: bàn và bảng phân ca
-  const table = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.75, 0.8), lambert(0x6b5b4a));
-  table.position.set(roomC('PHÒNG NGHỈ').x, 0.375, 2.8);
-  add(table);
+  // Phòng nghỉ: bàn, ghế nhựa, tủ khoá cá nhân và bảng phân ca (nhân viên bắt đầu ca ở đây)
+  const table = add(boxFrom(BREAK_TABLE, 0, 0.75, lambert(0x6b5b4a)), true);
+  table.castShadow = true;
+  const chairMat = lambert(0x2f6db5);
+  for (const [dx, dz] of [[-0.6, -0.75], [0.6, -0.75], [-0.6, 0.75], [0.6, 0.75]]) {
+    const c = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.45, 0.42), chairMat);
+    c.position.set((BREAK_TABLE.minX + BREAK_TABLE.maxX) / 2 + dx, 0.225, (BREAK_TABLE.minZ + BREAK_TABLE.maxZ) / 2 + dz);
+    add(c);
+  }
+  const breakBox = roomByName('PHÒNG NGHỈ').box;
+  for (let i = 0; i < 4; i++) {
+    const l = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.8, 0.45), lambert(i % 2 ? 0x7c8a86 : 0x6d7b77));
+    l.position.set(breakBox.maxX - 0.35, 0.9, 1.0 + i * 0.55);
+    add(l);
+  }
   const roster = labelPlane(['BẢNG PHÂN CA', `1. ${playerName.toUpperCase()}`], 1.4, 0.8, { bg: '#f1eee6', fg: '#24221e' });
   roster.position.set(roomC('PHÒNG NGHỈ').x, 1.7, 0.13);
   add(roster);
 
-  // Văn phòng: một cái bàn, một ngọn đèn bàn, một tờ giấy (chưa vào được, nhìn qua cửa)
-  const office = roomC('VĂN PHÒNG');
-  const desk = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.76, 0.7), lambert(0x4a3b2e));
-  desk.position.set(office.x, 0.38, 2.4);
-  add(desk);
+  // Văn phòng: một cái bàn, một ngọn đèn bàn, một tờ giấy
+  const office = { x: (OFFICE_DESK.minX + OFFICE_DESK.maxX) / 2, z: (OFFICE_DESK.minZ + OFFICE_DESK.maxZ) / 2 };
+  add(boxFrom(OFFICE_DESK, 0, 0.76, lambert(0x4a3b2e)), true);
   const paper = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.004, 0.3), lambert(0xf1eee6));
-  paper.position.set(office.x - 0.1, 0.765, 2.45);
+  paper.position.set(office.x - 0.1, 0.765, office.z + 0.05);
   add(paper);
   const lamp = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.16, 10, 1, true), lambert(0x2d3330, { emissive: 0xffd78a, emissiveIntensity: 0.5, side: THREE.DoubleSide }));
-  lamp.position.set(office.x + 0.45, 1.05, 2.3);
+  lamp.position.set(office.x + 0.45, 1.05, office.z - 0.1);
   add(lamp);
+
+  // Phòng Kiểm Kê (riêng của Người Kiểm Kê): tủ hồ sơ xám kín tường, một chiếc ghế quay mặt vào tường,
+  // đèn đỏ trên cửa, sàn kẻ ô chỗ nó đứng chờ.
+  const audit = roomByName('PHÒNG KIỂM KÊ');
+  const cabMat = lambert(0x5d6461);
+  const drawerMat = lambert(0x3c4240);
+  for (const c of AUDIT_CABINETS) {
+    add(boxFrom(c, 0, 1.9, cabMat), true);
+    // ngăn kéo: các vạch tối trên mặt tủ
+    const along = c.maxX - c.minX > c.maxZ - c.minZ;
+    const len = along ? c.maxX - c.minX : c.maxZ - c.minZ;
+    for (let k = 0; k < 4; k++) {
+      const d = new THREE.Mesh(new THREE.BoxGeometry(along ? len - 0.1 : 0.02, 0.02, along ? 0.02 : len - 0.1), drawerMat);
+      d.position.set(along ? (c.minX + c.maxX) / 2 : c.minX - 0.005, 0.4 + k * 0.42, along ? c.maxZ + 0.005 : (c.minZ + c.maxZ) / 2);
+      add(d);
+    }
+  }
+  const chair = new THREE.Group();
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.06, 0.45), lambert(0x1c1f1e));
+  seat.position.y = 0.46;
+  const back2 = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.5, 0.05), lambert(0x1c1f1e));
+  back2.position.set(0, 0.74, 0.2);
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.44, 6), lambert(0x6a706e));
+  leg.position.y = 0.22;
+  chair.add(seat, back2, leg);
+  chair.position.set(audit.box.minX + 1.2, 0, 1.4);
+  chair.rotation.y = Math.PI * 0.85; // quay mặt vào góc tường
+  add(chair);
+  const grid = new THREE.Mesh(
+    new THREE.RingGeometry(0.5, 0.56, 4, 1, Math.PI / 4),
+    new THREE.MeshBasicMaterial({ color: 0x8a1d1d, toneMapped: false }),
+  );
+  grid.rotation.x = -Math.PI / 2;
+  grid.position.set(audit.door.x, 0.006, 2.4);
+  add(grid);
+  const redLamp = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.08), lambert(0x3a0d0d, { emissive: 0xff2a1a, emissiveIntensity: 1.2 }));
+  redLamp.position.set(audit.door.x, 2.98, STORE.backZ + 0.12);
+  add(redLamp);
+  const auditSign = labelPlane(['PHÒNG KIỂM KÊ', 'KHÔNG PHẬN SỰ MIỄN VÀO'], 1.5, 0.42, { bg: '#2a0f0f', fg: '#ff8a7a' });
+  auditSign.position.set(audit.door.x, 2.6, STORE.backZ + 0.13);
+  add(auditSign);
+
+  // Kho và kho lạnh: khu lấy hàng. Vạch xanh trên sàn ở cửa + biển: kiểm kê viên không kiểm đếm ở đây.
+  const safeMat = new THREE.MeshBasicMaterial({ color: 0x2f9c5a, toneMapped: false });
+  for (const r of ROOMS.filter((x) => x.safe)) {
+    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(r.doorW + 0.4, 0.18), safeMat);
+    stripe.rotation.x = -Math.PI / 2;
+    stripe.position.set(r.door.x, 0.007, r.door.z - 0.25);
+    add(stripe);
+    const sign = labelPlane(['KHU LẤY HÀNG', 'KHÔNG KIỂM ĐẾM'], 1.1, 0.32, { bg: '#0f3a22', fg: '#c9ffd8' });
+    sign.position.set(r.door.x + r.doorW / 2 + 0.75, 2.0, r.door.z + 0.13);
+    add(sign);
+  }
+
+  // Pallet hàng: đế gỗ + khối hàng bọc màng co + dây đai (che tầm nhìn, chặn lối). Vẽ gộp: 3 lệnh vẽ cho mọi pallet.
+  {
+    const n = PALLETS.length;
+    const unit = new THREE.BoxGeometry(1, 1, 1);
+    const base = new THREE.InstancedMesh(unit, lambert(0x8a6a44), n);
+    const body = new THREE.InstancedMesh(unit, lambert(0xffffff), n);
+    const strap = new THREE.InstancedMesh(unit, lambert(0x2a2d2c), n);
+    const wrap = [0x9fb7c4, 0xc9b48a, 0xd4d0c4, 0x7fa4b8];
+    const m = new THREE.Matrix4();
+    const q0 = new THREE.Quaternion();
+    const col = new THREE.Color();
+    PALLETS.forEach((b, i) => {
+      const w = b.maxX - b.minX;
+      const d = b.maxZ - b.minZ;
+      const cx = (b.minX + b.maxX) / 2;
+      const cz = (b.minZ + b.maxZ) / 2;
+      base.setMatrixAt(i, m.compose(new THREE.Vector3(cx, 0.07, cz), q0, new THREE.Vector3(w, 0.14, d)));
+      body.setMatrixAt(i, m.compose(new THREE.Vector3(cx, (PALLET_H + 0.14) / 2, cz), q0, new THREE.Vector3(w - 0.08, PALLET_H - 0.14, d - 0.08)));
+      strap.setMatrixAt(i, m.compose(new THREE.Vector3(cx, 1.2, cz), q0, new THREE.Vector3(w - 0.02, 0.05, d - 0.02)));
+      body.setColorAt(i, col.setHex(wrap[i % wrap.length]));
+    });
+    for (const im of [base, body, strap]) {
+      im.castShadow = true;
+      im.receiveShadow = true;
+      add(im);
+    }
+    raySolids.push(body);
+  }
 
   // Kho: cửa nhân viên (đã khoá) và máy chấm công, nơi điểm danh lúc 06:00
   const staffDoor = new THREE.Mesh(new THREE.BoxGeometry(1.0, 2.1, 0.08), lambert(0x5b4a3a));
@@ -815,8 +935,10 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
   outside.position.set(STORE.w / 2, -0.01, STORE.d + 10);
   add(outside);
   const figures: THREE.Object3D[] = [];
-  for (const [x, z] of [[9, STORE.d + 2.4], [18.8, STORE.d + 3.0], [27, STORE.d + 2.2]]) {
-    const inst: ModelInstance | null = models?.instance('nhan_vien') ?? null;
+  // Người chơi trông như nhân viên bản ngố (đầu to, mắt chấm). Người giữa thỉnh thoảng vẫy tay chậm.
+  const W = STORE.w;
+  for (const [x, z, clip] of [[W * 0.25, STORE.d + 2.4, 'dung'], [W * 0.52, STORE.d + 3.0, 'vay_tay'], [W * 0.75, STORE.d + 2.2, 'dung']] as const) {
+    const inst: ModelInstance | null = models?.instance('nhan_vien_ngo') ?? models?.instance('nhan_vien') ?? null;
     if (inst) {
       // Bóng người tối ngoài kính, đứng thở, nhìn vào siêu thị
       inst.root.traverse((o) => {
@@ -832,7 +954,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null): 
       });
       inst.root.position.set(x, 0, z);
       inst.root.rotation.y = Math.PI + (rand() - 0.5) * 0.3;
-      playClip(inst, null, 'dung', { timeScale: 0.8 + rand() * 0.4 });
+      playClip(inst, null, clip, { timeScale: clip === 'vay_tay' ? 0.35 : 0.8 + rand() * 0.4 });
       inst.mixer.setTime(rand() * 3);
       mixers.push(inst.mixer);
       add(inst.root);
