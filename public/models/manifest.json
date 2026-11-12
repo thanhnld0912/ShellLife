@@ -2,24 +2,25 @@
   {
     "file": "ke_hang.glb",
     "ten": "Kệ hàng (module 1,3 m, cao 2,4 m)",
-    "mo_ta": "Gondola 2 mặt, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).",
-    "tris": 660,
+    "mo_ta": "Gondola 2 mặt màu trắng, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng, bảng đầu kệ đỏ. Ghép 8 cái thành một dãy kệ. Hàng hoá đặt riêng (InstancedMesh).",
+    "tris": 456,
     "kich_thuoc_m": [
       1.3,
       2.62,
-      0.952
+      0.945
     ],
-    "kb": 50.0
+    "lenh_ve": 1,
+    "kb": 43.1
   },
   {
     "file": "nguoi_kiem_ke.glb",
     "ten": "Người Kiểm Kê",
-    "mo_ta": "Cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối (vạt áo bay theo bước chân), cà vạt đỏ sẫm. Đầu trơn không mặt, chỗ mắt là nhãn mã vạch. Tay phải dài quá gối, 3 ngón dài. Tay trái cầm máy quét kiểu súng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.",
-    "tris": 972,
+    "mo_ta": "Cảm hứng Slender Man: cao 2,15 m, mảnh khảnh, chân dài, vest đen ôm sát (vai hẹp xuôi, eo thon, ve nhọn), sơ mi trắng, cà vạt đen mảnh, quần âu, giày mũi nhọn. Đầu trứng trắng trơn không mặt, dải mắt đen in mã vạch trắng có vạch laser đỏ phát sáng. Tay phải dài quá gối, 3 ngón dài 2 đốt. Tay trái cầm máy quét vàng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.",
+    "tris": 1436,
     "kich_thuoc_m": [
-      0.579,
-      2.161,
-      0.728
+      0.575,
+      2.172,
+      0.716
     ],
     "chuyen_dong": [
       {
@@ -73,7 +74,7 @@
         "lap": false
       }
     ],
-    "kb": 276.0
+    "kb": 323.4
   },
   {
     "file": "nhan_vien.glb",
@@ -133,9 +134,9 @@
     "file": "nhan_vien_ngo.glb",
     "ten": "Nhân viên (bản ngố)",
     "mo_ta": "Cao 1,61 m, đầu và tay to, mắt chấm, gilê rộng, thẻ đeo cổ to đung đưa. Có sẵn thùng carton ẩn để diễn cảnh \"đóng thùng\".",
-    "tris": 1040,
+    "tris": 1224,
     "kich_thuoc_m": [
-      0.8,
+      0.865,
       1.615,
       0.961
     ],
@@ -191,12 +192,32 @@
         "lap": true
       },
       {
+        "ten": "xem_phieu",
+        "nhan": "Xem phiếu việc (Tab): giơ bảng kẹp, cúi nhìn",
+        "lap": true
+      },
+      {
+        "ten": "di_xem_phieu",
+        "nhan": "Vừa đi vừa xem phiếu việc",
+        "lap": true
+      },
+      {
+        "ten": "khieng",
+        "nhan": "Khiêng kiện hàng (người đi sau)",
+        "lap": true
+      },
+      {
+        "ten": "khieng_lui",
+        "nhan": "Khiêng kiện hàng (người đi trước)",
+        "lap": true
+      },
+      {
         "ten": "dong_thung",
         "nhan": "Bị \"đóng thùng\"",
         "lap": false
       }
     ],
-    "kb": 320.2
+    "kb": 408.5
   },
   {
     "file": "thung_carton.glb",
@@ -208,13 +229,14 @@
       0.506,
       0.6
     ],
-    "kb": 16.3
+    "lenh_ve": 1,
+    "kb": 16.7
   },
   {
     "file": "tu_mat.glb",
     "ten": "Tủ mát cửa kính",
     "mo_ta": "1,0×2,1 m, 2 cánh kính hơi sương, lòng tủ sáng, 5 tầng (đáy + 4 kệ lưới có nẹp giá), đèn LED dọc. Lòng tủ để trống: game tự xếp nước, sữa vào các tầng (xem tang_hang).",
-    "tris": 660,
+    "tris": 516,
     "kich_thuoc_m": [
       1.0,
       2.28,
@@ -257,13 +279,14 @@
         "z1": 0.27
       }
     ],
-    "kb": 54.7
+    "lenh_ve": 4,
+    "kb": 51.6
   },
   {
     "file": "ke_mat.glb",
     "ten": "Ngăn mát mở (kệ lạnh)",
     "mo_ta": "1,25×2,0 m, không cửa, 4 tầng (khay đáy + 3 kệ ngắn dần), mái có đèn, rèm đêm cuộn trên cao, khe gió lạnh xanh. Đặt thành dãy dọc tường; game tự xếp hàng.",
-    "tris": 472,
+    "tris": 364,
     "kich_thuoc_m": [
       1.252,
       2.0,
@@ -299,7 +322,8 @@
         "z1": 0.035
       }
     ],
-    "kb": 40.5
+    "lenh_ve": 4,
+    "kb": 37.7
   },
   {
     "file": "tu_dong.glb",
@@ -327,19 +351,21 @@
         "z1": 0.37
       }
     ],
-    "kb": 30.9
+    "lenh_ve": 4,
+    "kb": 35.5
   },
   {
     "file": "quay_thu_ngan.glb",
     "ten": "Quầy thu ngân",
-    "mo_ta": "3,0×1,3 m. Băng chuyền, mặt quét đỏ, màn hình, ngăn kéo tiền, máy in hoá đơn (chỗ in \"phiếu chửi khéo\").",
-    "tris": 324,
+    "mo_ta": "3,0×1,3 m, thân trắng sọc đỏ, mặt gỗ sáng. Băng chuyền, mặt quét đỏ, máy tính tiền, màn hình, máy in hoá đơn (chỗ in \"phiếu chửi khéo\"), giá kẹo nhỏ phía khách.",
+    "tris": 564,
     "kich_thuoc_m": [
       3.0,
       1.571,
-      1.3
+      1.65
     ],
-    "kb": 33.1
+    "lenh_ve": 5,
+    "kb": 58.2
   },
   {
     "file": "bang_dong_lanh.glb",
@@ -351,7 +377,8 @@
       0.45,
       0.16
     ],
-    "kb": 26.3
+    "lenh_ve": 4,
+    "kb": 28.8
   },
   {
     "file": "may_cham_cong.glb",
@@ -363,7 +390,8 @@
       0.42,
       0.182
     ],
-    "kb": 26.3
+    "lenh_ve": 2,
+    "kb": 30.1
   },
   {
     "file": "the_nhan_vien.glb",
@@ -375,7 +403,8 @@
       0.093,
       0.003
     ],
-    "kb": 15.8
+    "lenh_ve": 1,
+    "kb": 17.4
   },
   {
     "file": "may_quet.glb",
@@ -387,7 +416,8 @@
       0.193,
       0.195
     ],
-    "kb": 13.7
+    "lenh_ve": 3,
+    "kb": 15.5
   },
   {
     "file": "den_pin.glb",
@@ -399,7 +429,8 @@
       0.072,
       0.206
     ],
-    "kb": 10.5
+    "lenh_ve": 2,
+    "kb": 11.9
   },
   {
     "file": "xe_day.glb",
@@ -411,102 +442,514 @@
       1.015,
       0.85
     ],
-    "kb": 22.6
+    "lenh_ve": 1,
+    "kb": 26.2
+  },
+  {
+    "file": "kien_nuoc.glb",
+    "ten": "Kiện nước suối (2 người khiêng)",
+    "mo_ta": "Dài 1,1 m, 60 chai 1,5 L bọc màng co (~90 kg), quai đai vàng hai đầu, nhãn vàng hình 2 người khiêng.",
+    "tris": 3168,
+    "kich_thuoc_m": [
+      0.501,
+      0.381,
+      1.23
+    ],
+    "lenh_ve": 1,
+    "kb": 272.5
+  },
+  {
+    "file": "tu_dien.glb",
+    "ten": "Tủ điện tổng",
+    "mo_ta": "Tủ thép xám 0,9×1,8 m áp tường, cửa mở. 6 cầu dao đen (cần gạt trắng) ở 1,3 m, cầu dao tổng đỏ ở 0,95 m, sơ đồ thứ tự bật dán mặt trong cửa, biển tam giác NGUY HIỂM ĐIỆN mặt ngoài.",
+    "tris": 758,
+    "kich_thuoc_m": [
+      1.094,
+      1.895,
+      1.188
+    ],
+    "lenh_ve": 1,
+    "kb": 70.3
+  },
+  {
+    "file": "thung_rac.glb",
+    "ten": "Thùng rác",
+    "mo_ta": "Thùng nhựa xanh cao 0,8 m, đường kính 0,42 m, nắp vòm có khe lật, mép túi rác đen lộ dưới nắp.",
+    "tris": 292,
+    "kich_thuoc_m": [
+      0.425,
+      0.81,
+      0.427
+    ],
+    "lenh_ve": 1,
+    "kb": 18.4
+  },
+  {
+    "file": "tui_rac.glb",
+    "ten": "Túi rác",
+    "mo_ta": "Túi nilon đen buộc nút, rộng ~0,36 m, cao 0,5 m, lồi lõm.",
+    "tris": 140,
+    "kich_thuoc_m": [
+      0.356,
+      0.436,
+      0.293
+    ],
+    "lenh_ve": 1,
+    "kb": 19.1
+  },
+  {
+    "file": "xe_rac.glb",
+    "ten": "Xe thu gom rác",
+    "mo_ta": "Khung 0,6×1,0 m, thùng xám vành vàng cao ~1 m, túi rác đen lòi lên miệng, tay đẩy xanh phía sau (+Y) cao 1,02 m.",
+    "tris": 448,
+    "kich_thuoc_m": [
+      0.63,
+      1.044,
+      1.0
+    ],
+    "lenh_ve": 1,
+    "kb": 43.1
+  },
+  {
+    "file": "thung_rac_lon.glb",
+    "ten": "Thùng rác lớn (cửa sau)",
+    "mo_ta": "Thùng xanh đậm 1,6×1,0×1,25 m có bánh xe, nắp trái đóng, nắp phải mở dựng lên, dải chữ trắng.",
+    "tris": 384,
+    "kich_thuoc_m": [
+      1.72,
+      2.037,
+      1.313
+    ],
+    "lenh_ve": 1,
+    "kb": 37.0
   },
   {
     "file": "hh_lon_nuoc.glb",
-    "ten": "Lon nước ngọt",
-    "mo_ta": "Cao 12,5 cm, 10 cạnh.",
-    "tris": 108,
+    "ten": "Lon nước ngọt cô-la",
+    "mo_ta": "Lon 12,4 cm, đỏ, dải trắng dưới, hình sóng trắng chéo.",
+    "tris": 260,
     "kich_thuoc_m": [
-      0.063,
-      0.125,
-      0.066
+      0.064,
+      0.126,
+      0.068
     ],
-    "kb": 8.4
+    "lenh_ve": 1,
+    "kb": 16.2
   },
   {
-    "file": "hh_hop_banh.glb",
-    "ten": "Hộp bánh quy",
-    "mo_ta": "16×22 cm.",
-    "tris": 36,
+    "file": "hh_lon_xanh.glb",
+    "ten": "Lon soda chanh",
+    "mo_ta": "Lon 12,4 cm, xanh lá, dải vàng, hình lát chanh.",
+    "tris": 292,
+    "kich_thuoc_m": [
+      0.064,
+      0.126,
+      0.07
+    ],
+    "lenh_ve": 1,
+    "kb": 18.4
+  },
+  {
+    "file": "hh_lon_cam.glb",
+    "ten": "Lon soda cam",
+    "mo_ta": "Lon 12,4 cm, cam, dải trắng, hình lát cam.",
+    "tris": 292,
+    "kich_thuoc_m": [
+      0.064,
+      0.126,
+      0.07
+    ],
+    "lenh_ve": 1,
+    "kb": 18.4
+  },
+  {
+    "file": "hh_ca_phe.glb",
+    "ten": "Lon cà phê sữa",
+    "mo_ta": "Lon 12,4 cm, nâu, dải kem, 2 hạt cà phê.",
+    "tris": 264,
+    "kich_thuoc_m": [
+      0.064,
+      0.126,
+      0.069
+    ],
+    "lenh_ve": 1,
+    "kb": 16.2
+  },
+  {
+    "file": "hh_tra_xanh.glb",
+    "ten": "Chai trà xanh",
+    "mo_ta": "Cao 26 cm, nước trà xanh nhạt, nhãn trắng có 2 lá trà, nắp xanh lá.",
+    "tris": 336,
+    "kich_thuoc_m": [
+      0.06,
+      0.26,
+      0.064
+    ],
+    "lenh_ve": 1,
+    "kb": 16.6
+  },
+  {
+    "file": "hh_snack_rong.glb",
+    "ten": "Snack rong biển",
+    "mo_ta": "16×22 cm, gói xanh lá đậm, đĩa trắng có lá rong biển xanh đen.",
+    "tris": 152,
+    "kich_thuoc_m": [
+      0.162,
+      0.218,
+      0.082
+    ],
+    "lenh_ve": 1,
+    "kb": 15.1
+  },
+  {
+    "file": "hh_snack_cay.glb",
+    "ten": "Snack cay",
+    "mo_ta": "16×22 cm, gói đỏ rực, đĩa vàng, lát snack cam, 2 quả ớt.",
+    "tris": 192,
+    "kich_thuoc_m": [
+      0.162,
+      0.218,
+      0.083
+    ],
+    "lenh_ve": 1,
+    "kb": 18.4
+  },
+  {
+    "file": "hh_mi_ga.glb",
+    "ten": "Gói mì gà",
+    "mo_ta": "15×12 cm, vàng, dải xanh lá, bát mì có đũa và đùi gà.",
+    "tris": 176,
+    "kich_thuoc_m": [
+      0.152,
+      0.12,
+      0.053
+    ],
+    "lenh_ve": 1,
+    "kb": 17.2
+  },
+  {
+    "file": "hh_banh_dua.glb",
+    "ten": "Hộp bánh quy dừa",
+    "mo_ta": "16×22 cm, xanh dương nhạt, dải trắng, 2 bánh quy rắc dừa trắng.",
+    "tris": 164,
     "kich_thuoc_m": [
       0.162,
       0.22,
-      0.064
+      0.067
     ],
-    "kb": 5.1
+    "lenh_ve": 1,
+    "kb": 15.6
+  },
+  {
+    "file": "hh_lau_san.glb",
+    "ten": "Bình nước lau sàn",
+    "mo_ta": "Cao 23 cm, hồng, nhãn trắng có ngôi sao tím, đầu xịt trắng cò đỏ.",
+    "tris": 212,
+    "kich_thuoc_m": [
+      0.085,
+      0.233,
+      0.09
+    ],
+    "lenh_ve": 1,
+    "kb": 21.1
   },
   {
     "file": "hh_chai_nuoc.glb",
     "ten": "Chai nước suối",
-    "mo_ta": "Cao 23 cm.",
-    "tris": 112,
+    "mo_ta": "Cao 26 cm, nhãn xanh dương có núi tuyết, nắp trắng.",
+    "tris": 314,
     "kich_thuoc_m": [
-      0.069,
-      0.23,
-      0.069
+      0.06,
+      0.26,
+      0.062
     ],
-    "kb": 8.3
+    "lenh_ve": 1,
+    "kb": 13.2
+  },
+  {
+    "file": "hh_chai_ngot.glb",
+    "ten": "Chai nước cam 1,5 L",
+    "mo_ta": "Cao 32 cm, to bè, nhãn xanh lá có lát cam.",
+    "tris": 444,
+    "kich_thuoc_m": [
+      0.08,
+      0.326,
+      0.084
+    ],
+    "lenh_ve": 1,
+    "kb": 25.8
+  },
+  {
+    "file": "hh_hop_banh.glb",
+    "ten": "Hộp bánh quy bơ",
+    "mo_ta": "16×22 cm, vàng, dải nâu, 2 bánh quy có hạt sô-cô-la.",
+    "tris": 164,
+    "kich_thuoc_m": [
+      0.162,
+      0.22,
+      0.067
+    ],
+    "lenh_ve": 1,
+    "kb": 15.6
+  },
+  {
+    "file": "hh_ngu_coc.glb",
+    "ten": "Hộp ngũ cốc",
+    "mo_ta": "19×27 cm, đỏ, bát ngũ cốc có thìa.",
+    "tris": 184,
+    "kich_thuoc_m": [
+      0.192,
+      0.27,
+      0.073
+    ],
+    "lenh_ve": 1,
+    "kb": 16.8
+  },
+  {
+    "file": "hh_socola.glb",
+    "ten": "Thanh sô-cô-la sữa",
+    "mo_ta": "9×16 cm, nâu, dải vàng kim, lộ 6 ô sô-cô-la.",
+    "tris": 108,
+    "kich_thuoc_m": [
+      0.092,
+      0.16,
+      0.033
+    ],
+    "lenh_ve": 1,
+    "kb": 11.2
   },
   {
     "file": "hh_goi_mi.glb",
-    "ten": "Gói mì",
-    "mo_ta": "15×12 cm.",
-    "tris": 68,
+    "ten": "Gói mì tôm chua cay",
+    "mo_ta": "15×12 cm, cam, dải đỏ, bát mì có đũa và quả ớt.",
+    "tris": 164,
     "kich_thuoc_m": [
       0.152,
       0.12,
-      0.049
+      0.053
     ],
-    "kb": 7.7
+    "lenh_ve": 1,
+    "kb": 16.1
   },
   {
     "file": "hh_hop_sua.glb",
-    "ten": "Hộp sữa giấy",
-    "mo_ta": "Cao 18 cm, nắp mái nhà.",
-    "tris": 42,
+    "ten": "Hộp sữa tươi",
+    "mo_ta": "Cao 18 cm, trắng có đốm bò sữa, mái và đáy xanh dương.",
+    "tris": 90,
     "kich_thuoc_m": [
       0.072,
       0.19,
-      0.072
+      0.074
     ],
-    "kb": 5.0
+    "lenh_ve": 1,
+    "kb": 9.6
+  },
+  {
+    "file": "hh_snack.glb",
+    "ten": "Gói snack khoai tây",
+    "mo_ta": "16×22 cm, gói phồng tím, đĩa vàng có lát khoai, băng rôn đỏ.",
+    "tris": 152,
+    "kich_thuoc_m": [
+      0.162,
+      0.218,
+      0.082
+    ],
+    "lenh_ve": 1,
+    "kb": 15.1
+  },
+  {
+    "file": "hh_do_hop.glb",
+    "ten": "Cá hộp sốt cà",
+    "mo_ta": "Lon thấp 9 cm, nhãn xanh lá dải cam, hình con cá bạc.",
+    "tris": 153,
+    "kich_thuoc_m": [
+      0.081,
+      0.09,
+      0.087
+    ],
+    "lenh_ve": 1,
+    "kb": 13.6
+  },
+  {
+    "file": "hh_nuoc_tay.glb",
+    "ten": "Bình xịt tẩy rửa",
+    "mo_ta": "Cao 23 cm, xanh dương, nhãn trắng có ngôi sao vàng, đầu xịt trắng cò đỏ.",
+    "tris": 212,
+    "kich_thuoc_m": [
+      0.085,
+      0.233,
+      0.09
+    ],
+    "lenh_ve": 1,
+    "kb": 21.1
+  },
+  {
+    "file": "hh_nuoc_giat.glb",
+    "ten": "Can nước giặt",
+    "mo_ta": "Cao 24 cm, cam, quai cầm, nắp xanh, nhãn trắng có bong bóng.",
+    "tris": 208,
+    "kich_thuoc_m": [
+      0.13,
+      0.25,
+      0.091
+    ],
+    "lenh_ve": 1,
+    "kb": 20.0
+  },
+  {
+    "file": "hh_dau_an.glb",
+    "ten": "Chai dầu ăn",
+    "mo_ta": "Cao 29 cm, vàng óng, nắp đỏ, nhãn xanh có giọt dầu.",
+    "tris": 333,
+    "kich_thuoc_m": [
+      0.067,
+      0.287,
+      0.07
+    ],
+    "lenh_ve": 1,
+    "kb": 16.7
   },
   {
     "file": "hh_kem.glb",
-    "ten": "Hộp kem",
-    "mo_ta": "Hộp tròn 13 cm, cao 9 cm. Xếp chồng trong tủ đông.",
-    "tris": 84,
+    "ten": "Hộp kem dâu",
+    "mo_ta": "Hộp tròn 13 cm, cao 9 cm, hồng nắp trắng, quả dâu trên nắp, ốc quế phía trước.",
+    "tris": 121,
     "kich_thuoc_m": [
       0.126,
-      0.089,
+      0.092,
       0.132
     ],
-    "kb": 7.6
+    "lenh_ve": 1,
+    "kb": 10.9
   },
   {
     "file": "hh_goi_dong.glb",
-    "ten": "Gói đồ đông lạnh",
-    "mo_ta": "20×27 cm, nằm phẳng (sủi cảo, xúc xích). Xếp lớp trong tủ đông.",
-    "tris": 68,
+    "ten": "Gói sủi cảo đông lạnh",
+    "mo_ta": "20×27 cm, nằm phẳng, xanh dương, cửa sổ thấy 3 viên sủi cảo.",
+    "tris": 128,
     "kich_thuoc_m": [
       0.202,
-      0.048,
+      0.058,
       0.27
     ],
-    "kb": 7.7
+    "lenh_ve": 1,
+    "kb": 15.9
+  },
+  {
+    "file": "hh_pizza.glb",
+    "ten": "Hộp pizza đông lạnh",
+    "mo_ta": "28×28 cm, dày 4 cm, nằm phẳng trong tủ đông.",
+    "tris": 180,
+    "kich_thuoc_m": [
+      0.28,
+      0.045,
+      0.28
+    ],
+    "lenh_ve": 1,
+    "kb": 16.8
   },
   {
     "file": "hh_sua_chua.glb",
-    "ten": "Lốc sữa chua",
-    "mo_ta": "4 hũ, 14×14 cm, cao 6,5 cm. Bày ở ngăn mát.",
-    "tris": 236,
+    "ten": "Lốc sữa chua dâu",
+    "mo_ta": "4 hũ nắp hồng, 14×14 cm, cao 6,5 cm, đai hồng có quả dâu. Bày ở ngăn mát.",
+    "tris": 268,
     "kich_thuoc_m": [
       0.14,
       0.064,
-      0.14
+      0.146
     ],
-    "kb": 16.4
+    "lenh_ve": 1,
+    "kb": 22.9
+  },
+  {
+    "file": "hh_sua_tuoi.glb",
+    "ten": "Bình sữa tươi 1 L",
+    "mo_ta": "Cao 21 cm, trắng có đốm bò sữa, dải và nắp xanh dương.",
+    "tris": 120,
+    "kich_thuoc_m": [
+      0.092,
+      0.215,
+      0.094
+    ],
+    "lenh_ve": 1,
+    "kb": 12.3
+  },
+  {
+    "file": "hh_nuoc_cam.glb",
+    "ten": "Chai nước ép cam",
+    "mo_ta": "Cao 23 cm, nhãn trắng có quả cam. Bày trong tủ mát.",
+    "tris": 344,
+    "kich_thuoc_m": [
+      0.06,
+      0.234,
+      0.064
+    ],
+    "lenh_ve": 1,
+    "kb": 17.4
+  },
+  {
+    "file": "ke_rau_qua_1.glb",
+    "ten": "Kệ rau quả (táo, cam, chuối)",
+    "mo_ta": "1,8×1,1 m, cao ~1 m. Kệ gỗ nghiêng bày 3 sọt táo, cam, chuối, tấm chắn xanh lá, bảng giá, thùng dự trữ ở tầng dưới.",
+    "tris": 4168,
+    "kich_thuoc_m": [
+      1.8,
+      1.098,
+      1.087
+    ],
+    "lenh_ve": 1,
+    "kb": 525.9
+  },
+  {
+    "file": "ke_rau_qua_2.glb",
+    "ten": "Kệ rau quả (bắp cải, cà chua, khoai tây)",
+    "mo_ta": "1,8×1,1 m, cao ~1 m. Kệ gỗ nghiêng bày 3 sọt bắp cải, cà chua, khoai tây, tấm chắn xanh lá, bảng giá, thùng dự trữ ở tầng dưới.",
+    "tris": 5396,
+    "kich_thuoc_m": [
+      1.8,
+      1.098,
+      1.087
+    ],
+    "lenh_ve": 1,
+    "kb": 650.6
+  },
+  {
+    "file": "ke_rau_qua_3.glb",
+    "ten": "Kệ rau quả (dứa, táo, khoai tây)",
+    "mo_ta": "1,8×1,1 m, cao ~1 m. Kệ gỗ nghiêng bày 3 sọt dứa, táo, khoai tây, tấm chắn xanh lá, bảng giá, thùng dự trữ ở tầng dưới.",
+    "tris": 3716,
+    "kich_thuoc_m": [
+      1.8,
+      1.178,
+      1.087
+    ],
+    "lenh_ve": 1,
+    "kb": 466.0
+  },
+  {
+    "file": "xe_mua_sam.glb",
+    "ten": "Xe đẩy mua hàng",
+    "mo_ta": "0,5×0,9 m, cao 1 m. Giỏ lưới thép, tay đẩy đỏ. Xếp lồng nhau ở bãi xe gần quầy.",
+    "tris": 632,
+    "kich_thuoc_m": [
+      0.512,
+      1.0,
+      0.892
+    ],
+    "lenh_ve": 1,
+    "kb": 59.6
+  },
+  {
+    "file": "gio_hang.glb",
+    "ten": "Chồng giỏ nhựa",
+    "mo_ta": "6 giỏ đỏ 42×30 cm lồng nhau, cao 0,52 m. Đặt cạnh quầy.",
+    "tris": 396,
+    "kich_thuoc_m": [
+      0.48,
+      0.518,
+      0.36
+    ],
+    "lenh_ve": 1,
+    "kb": 37.6
   }
 ]

@@ -8,7 +8,7 @@
 # Gốc toạ độ của mỗi model nằm giữa đáy (đặt thẳng xuống sàn được).
 
 import bpy, bmesh, math, os, sys, json
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 OUT_GLB = os.path.join(ROOT, 'public', 'models')
@@ -108,6 +108,69 @@ C = dict(
     sc_vang=M('sc_vang', 0xf0c94a, 0.6),
 )
 
+# Bảng màu nội thất kiểu low-poly sáng sủa (kệ trắng, thương hiệu đỏ, gỗ sáng)
+K = dict(
+    ke=M('ke_trang', 0xe8ebea, 0.7),
+    ke_xam=M('ke_xam', 0xaab2b4, 0.6),
+    ke_chan=M('ke_chan', 0x4b5355, 0.7),
+    vo=M('vo_tu_trang', 0xeef1f2, 0.5),
+    nhan_hieu=M('nhan_hieu', 0xd8473a, 0.6),
+    nhan_hieu2=M('nhan_hieu_xanh', 0x2f9c5a, 0.6),
+    tem=M('tem_vang', 0xf6d34a, 0.6),
+    go_sang=M('go_sang', 0xc99f66, 0.8),
+    go_dam=M('go_dam', 0x8a6238, 0.85),
+)
+
+def bang_mau_mat():
+    """Vật liệu dùng màu đỉnh 'Col' (glTF COLOR_0)."""
+    if 'bang_mau' in MATS:
+        return MATS['bang_mau']
+    m = bpy.data.materials.new('bang_mau')
+    try:
+        m.use_nodes = True
+    except Exception:
+        pass
+    nt = m.node_tree
+    b = nt.nodes.get('Principled BSDF')
+    b.inputs['Roughness'].default_value = 0.8
+    vc = nt.nodes.new('ShaderNodeVertexColor')
+    vc.layer_name = 'Col'
+    nt.links.new(vc.outputs['Color'], b.inputs['Base Color'])
+    MATS['bang_mau'] = m
+    return m
+
+def gop_mau(o):
+    """Gộp mọi vật liệu đục, không phát sáng của model thành 1 vật liệu màu đỉnh: 1 lệnh vẽ trong game.
+    Vật liệu phát sáng / trong suốt giữ riêng."""
+    me = o.data
+    mats = list(me.materials)
+    def keep(m):
+        b = m.node_tree.nodes.get('Principled BSDF') if m and m.node_tree else None
+        return b is None or b.inputs['Emission Strength'].default_value > 0 or b.inputs['Alpha'].default_value < 1
+    flags = [keep(m) for m in mats]
+    if all(flags) or len(mats) < 2:
+        return
+    kept = [m for m, k in zip(mats, flags) if k]
+    new_list = [bang_mau_mat()] + kept
+    remap = [new_list.index(m) if k else 0 for m, k in zip(mats, flags)]
+    attr = me.color_attributes.new('Col', 'BYTE_COLOR', 'CORNER')
+    for p in me.polygons:
+        m = mats[p.material_index]
+        col = (1.0, 1.0, 1.0, 1.0) if flags[p.material_index] else tuple(m.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value)
+        for li in p.loop_indices:
+            attr.data[li].color = col
+    idx = [remap[p.material_index] for p in me.polygons]
+    me.materials.clear()
+    for m in new_list:
+        me.materials.append(m)
+    for p, i in zip(me.polygons, idx):
+        p.material_index = i
+    try:
+        me.color_attributes.active_color = attr
+        me.color_attributes.render_color_index = me.color_attributes.active_color_index
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------- hình khối
 BONE = [None]  # xương đang gắn cho các khối tạo tiếp theo (chỉ dùng cho nhân vật)
 
@@ -167,6 +230,92 @@ def mesh(P, name, verts, faces, m):
     P.append(_post(o, m))
     return o
 
+def tien(P, prof, n=12, loc=(0, 0, 0), kink=38, cap_top=True, cap_bot=True):
+    """Khối tiện tròn (chai, lon): prof = [(bán kính, z, vật liệu của dải từ vòng này lên vòng sau), …] từ đáy lên.
+    Thân tròn bo mượt (đổ bóng mượt), chỗ gãy góc > kink độ (vai chai, mép lon) giữ cạnh sắc; hai nắp phẳng.
+    Một mặt thân quay thẳng ra trước (-Y) để dán hình nhận diện."""
+    mats = []
+    for _, _, m in prof:
+        if m not in mats:
+            mats.append(m)
+    a0 = -math.pi / 2 - math.pi / n
+    ring = lambda r, z: [(loc[0] + r * math.cos(a0 + 2 * math.pi * j / n), loc[1] + r * math.sin(a0 + 2 * math.pi * j / n), loc[2] + z) for j in range(n)]
+    verts, faces, fmat, fsmooth = [], [], [], []
+    for r, z, _ in prof:
+        verts += ring(r, z)
+    for i in range(len(prof) - 1):
+        for j in range(n):
+            a, b = i * n + j, i * n + (j + 1) % n
+            faces.append((a, b, b + n, a + n))
+            fmat.append(mats.index(prof[i][2]))
+            fsmooth.append(True)
+    if cap_bot:
+        base = len(verts)
+        verts += ring(prof[0][0], prof[0][1])
+        faces.append(tuple(base + j for j in reversed(range(n))))
+        fmat.append(mats.index(prof[0][2]))
+        fsmooth.append(False)
+    if cap_top:
+        base = len(verts)
+        verts += ring(prof[-1][0], prof[-1][1])
+        faces.append(tuple(base + j for j in range(n)))
+        fmat.append(mats.index(prof[-1][2]))
+        fsmooth.append(False)
+    me = bpy.data.meshes.new('tien')
+    me.from_pydata(verts, [], faces)
+    me.update()
+    for m in mats:
+        me.materials.append(m)
+    for p, mi in zip(me.polygons, fmat):
+        p.material_index = mi
+    mu = me.attributes.new('muot', 'BOOLEAN', 'FACE')
+    mu.data.foreach_set('value', fsmooth)
+    # cạnh sắc ở chỗ profile gãy góc
+    sharp = set()
+    for i in range(1, len(prof) - 1):
+        (r0, z0, _), (r1, z1, _), (r2, z2, _) = prof[i - 1], prof[i], prof[i + 1]
+        a1 = math.atan2(z1 - z0, r1 - r0)
+        a2 = math.atan2(z2 - z1, r2 - r1)
+        d = abs(math.degrees(a2 - a1))
+        if min(d, 360 - d) > kink:
+            sharp.add(i)
+    se = me.attributes.new('sharp_edge', 'BOOLEAN', 'EDGE')
+    vals = [False] * len(me.edges)
+    for e in me.edges:
+        v0, v1 = e.vertices
+        if v0 < len(prof) * n and v1 < len(prof) * n and v0 // n == v1 // n and v0 // n in sharp:
+            vals[e.index] = True
+    se.data.foreach_set('value', vals)
+    o = bpy.data.objects.new('tien', me)
+    scene.collection.objects.link(o)
+    if BONE[0]:
+        o['bone'] = BONE[0]
+    P.append(o)
+    return o
+
+def uon(objs, R, seg=0.012):
+    """Uốn các hình dán phẳng (đặt ở mặt phẳng y = -R…) ôm theo thân tròn bán kính R quanh trục z:
+    chỉ chia nhỏ các cạnh dài theo chiều ngang (mỗi đoạn ≤ seg mét, để không lún vào thân), rồi cuộn mỗi đỉnh
+    theo góc x / R, giữ nguyên độ nổi trước mặt thân. Hình nhỏ (lát chanh, hạt cà phê) gần như không thêm tam giác."""
+    import bmesh
+    for o in objs:
+        mw = o.matrix_world.copy()
+        me = o.data
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        long_e = [e for e in bm.edges if abs((mw @ e.verts[0].co).x - (mw @ e.verts[1].co).x) > seg]
+        if long_e:
+            span = max(abs((mw @ e.verts[0].co).x - (mw @ e.verts[1].co).x) for e in long_e)
+            bmesh.ops.subdivide_edges(bm, edges=long_e, cuts=min(3, int(span / seg)), use_grid_fill=True)
+        for v in bm.verts:
+            w = mw @ v.co
+            d = max(0.0006, -w.y - R)
+            a = w.x / R
+            v.co = Vector(((R + d) * math.sin(a), -(R + d) * math.cos(a), w.z))
+        bm.to_mesh(me)
+        bm.free()
+        o.matrix_world = Matrix.Identity(4)
+
 MODELS = []  # (obj, meta)
 
 def finish(P, name, ten, mo_ta):
@@ -185,6 +334,13 @@ def finish(P, name, ten, mo_ta):
     o.name = o.data.name = name
     bpy.ops.object.shade_flat()
     me = o.data
+    if 'muot' in me.attributes:   # thân tròn của khối tiện: đổ bóng mượt
+        mu = [False] * len(me.polygons)
+        me.attributes['muot'].data.foreach_get('value', mu)
+        for p, v in zip(me.polygons, mu):
+            if v:
+                p.use_smooth = True
+        me.attributes.remove(me.attributes['muot'])
     # gộp vật liệu trùng tên do join sinh ra
     tris = sum(len(p.vertices) - 2 for p in me.polygons)
     xs = [v.co.x for v in me.vertices]; ys = [v.co.y for v in me.vertices]; zs = [v.co.z for v in me.vertices]
@@ -200,20 +356,24 @@ def finish(P, name, ten, mo_ta):
 def ke_hang():
     P = []
     W, D, H = 1.3, 1.0, 2.4
-    box(P, (W, D * 0.9, 0.12), (0, 0, 0.06), C['thep_toi'])            # chân đế
-    box(P, (W, 0.05, H - 0.12), (0, 0, 0.12 + (H - 0.12) / 2), C['thep'])  # vách giữa (pegboard)
+    box(P, (W, D * 0.9, 0.12), (0, 0, 0.06), K['ke_chan'])                       # chân đế
+    for side in (-1, 1):
+        box(P, (W, 0.01, 0.1), (0, side * D * 0.45, 0.06), K['ke_xam'])          # tấm chắn chân
+    box(P, (W, 0.05, H - 0.12), (0, 0, 0.12 + (H - 0.12) / 2), K['ke'])         # vách giữa trắng
+    for side in (-1, 1):
+        for z in (0.38, 0.82, 1.26, 1.7, 2.14):
+            box(P, (W - 0.1, 0.004, 0.006), (0, side * 0.0275, z), K['ke_xam'])  # rãnh pegboard
     for x in (-W / 2 + 0.025, W / 2 - 0.025):
-        box(P, (0.05, 0.12, H), (x, 0, H / 2), C['thep_toi'])          # trụ đứng
+        box(P, (0.05, 0.12, H), (x, 0, H / 2), K['ke_xam'])                     # trụ đứng
     for side in (-1, 1):
         for z in (0.16, 0.6, 1.04, 1.48, 1.92):
-            box(P, (W - 0.08, 0.42, 0.03), (0, side * 0.25, z), C['thep'])
-            box(P, (W - 0.08, 0.015, 0.06), (0, side * 0.465, z + 0.01), C['tem_gia'])  # dải tem giá
-        for z in (0.16, 0.6, 1.04, 1.48, 1.92):
-            for x in (-0.4, 0.1, 0.45):
-                box(P, (0.05, 0.004, 0.03), (x, side * 0.474, z + 0.01), C['giay'])   # tem giá nhỏ
-    box(P, (W, 0.06, 0.22), (0, 0, H + 0.11), C['thuong_hieu'])          # bảng đầu kệ
+            box(P, (W - 0.08, 0.42, 0.03), (0, side * 0.25, z), K['ke'])
+            box(P, (W - 0.08, 0.015, 0.06), (0, side * 0.465, z + 0.01), K['tem'])  # dải tem giá
+    box(P, (W, 0.06, 0.22), (0, 0, H + 0.11), K['nhan_hieu'])                   # bảng đầu kệ đỏ
+    box(P, (W, 0.064, 0.03), (0, 0, H + 0.205), K['ke'])                        # viền trắng
     return finish(P, 'ke_hang', 'Kệ hàng (module 1,3 m, cao 2,4 m)',
-                  'Gondola 2 mặt, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng. Ghép 10 cái thành một dãy kệ 13 m. Hàng hoá đặt riêng (InstancedMesh).')
+                  'Gondola 2 mặt màu trắng, 5 tầng mỗi mặt, cao 2,4 m để che tia quét, dải tem giá vàng, bảng đầu kệ đỏ. '
+                  'Ghép 8 cái thành một dãy kệ. Hàng hoá đặt riêng (InstancedMesh).')
 
 # 2. Người Kiểm Kê (thiết kế lại): cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối, cà vạt đỏ sẫm.
 #    Đầu trứng trơn không mặt, chỗ mắt dán một nhãn MÃ VẠCH. Tay phải dài quá gối với 3 ngón dài.
@@ -223,79 +383,138 @@ KK = dict(hip=1.02, chest=1.72, neck=1.9, head_top=2.15,
           elbow_L=(0.25, -0.05, 1.32), wrist_L=(0.13, -0.38, 1.26),
           elbow_R=(-0.25, 0.01, 1.22), wrist_R=(-0.24, -0.02, 0.76),
           knee=0.55)
+def vanh(P, name, rings, m, n=8, a0=0.0, a1=2 * math.pi, caps=True):
+    """Khối tiện từ các vòng elip xếp từ trên xuống: rings = [(z, rx, ry, cx, cy)].
+    a0..a1: cung góc (đủ vòng thì đóng kín và có nắp). Mặt trước model là -Y."""
+    full = abs(a1 - a0 - 2 * math.pi) < 1e-6
+    cols = n if full else n + 1
+    verts, faces = [], []
+    for (z, rx, ry, cx, cy) in rings:
+        for k in range(cols):
+            a = a0 + (a1 - a0) * k / n
+            verts.append((cx + rx * math.cos(a), cy + ry * math.sin(a), z))
+    for i in range(len(rings) - 1):
+        for k in range(n):
+            k2 = (k + 1) % cols if full else k + 1
+            a, b = i * cols + k, i * cols + k2
+            c, d = (i + 1) * cols + k2, (i + 1) * cols + k
+            faces.append((a, d, c, b))
+    if full and caps:
+        faces.append(tuple(range(cols)))                                           # nắp trên
+        last = (len(rings) - 1) * cols
+        faces.append(tuple(last + k for k in reversed(range(cols))))               # nắp dưới
+    return mesh(P, name, verts, faces, m)
+
 def nguoi_kiem_ke():
+    """Cảm hứng Slender Man: rất cao, mảnh khảnh, vest đen ôm sát, sơ mi trắng, cà vạt đen, đầu trắng trơn.
+    Dấu hiệu riêng của game: dải mắt đen in mã vạch trắng có vạch laser đỏ, tay phải dài quá gối, máy quét."""
     P = []
-    U, Q, S, K = C['dong_phuc'], C['quan_kk'], C['da_kk'], C['nhua_den']
-    AO = M('ao_khoac_kk', 0x3a4148, 0.9)          # áo khoác dài
-    VAT = M('ca_vat_kk', 0x5c1414, 0.7)
-    knee = KK['knee']
-    # Quy ước bên: .L = phía +X (tay cầm máy quét), .R = phía -X (tay dài buông thõng)
+    VEST = M('vest_kk', 0x16181b, 0.75)            # vest đen
+    VE = M('ve_kk', 0x0b0c0e, 0.45)                # ve áo satin bóng hơn
+    QUAN = M('quan_kk3', 0x121417, 0.8)
+    GIAY = M('giay_da_kk', 0x0e0f10, 0.35)
+    DA = M('da_kk3', 0xe6e3dc, 0.85)               # da trắng bệch
+    SOMI = M('somi_kk', 0xeceae3, 0.8)
+    VAT = M('ca_vat_kk3', 0x08090a, 0.5)
+    KIM = M('kim_loai_kk', 0x9ea3a6, 0.4, 0.6)
+    LASER = M('laser_kk', 0xff2a1f, 0.4, 0.0, 8.0)
+    K = C['nhua_den']
+    hip, chest, knee = KK['hip'], KK['chest'], KK['knee']
+
+    # ---- chân dài mảnh: quần âu ống đứng, giày da mũi nhọn dài
     for sx, sd in ((1, 'L'), (-1, 'R')):
+        x = sx * 0.1
         bo('cang.' + sd)
-        box(P, (0.1, 0.3, 0.06), (sx * 0.1, -0.06, 0.03), K, bev=0.012)          # giày da mũi dài
-        limb(P, (sx * 0.1, 0, 0.06), (sx * 0.102, 0, knee), 0.042, Q, r2=0.05)     # cẳng chân mảnh
+        box(P, (0.085, 0.22, 0.075), (x, -0.035, 0.0375), GIAY, bev=0.016)        # thân giày
+        box(P, (0.06, 0.12, 0.045), (x, -0.18, 0.0225), GIAY, bev=0.012)          # mũi giày nhọn dài
+        vanh(P, 'ong_' + sd, [(knee, 0.046, 0.05, x, 0), (0.09, 0.044, 0.05, x, -0.004)], QUAN, n=6)
         bo('dui.' + sd)
-        limb(P, (sx * 0.102, 0, knee), (sx * 0.1, 0, KK['hip']), 0.05, Q, r2=0.06)
-        # vạt áo khoác: mỗi bên một tấm theo đùi (bước đi thì vạt áo xoè theo)
-        v = mesh(P, 'vat_' + sd, [
-            (sx * 0.005, -0.13, KK['hip'] + 0.02), (sx * 0.2, -0.11, KK['hip'] + 0.02),
-            (sx * 0.2, 0.11, KK['hip'] + 0.02), (sx * 0.005, 0.12, KK['hip'] + 0.02),
-            (sx * 0.0, -0.15, knee - 0.02), (sx * 0.23, -0.12, knee - 0.02),
-            (sx * 0.23, 0.13, knee - 0.02), (sx * 0.0, 0.14, knee - 0.02)],
-            [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7), (4, 5, 6, 7)] if sx > 0 else
-            [(4, 5, 1, 0), (5, 6, 2, 1), (6, 7, 3, 2), (7, 4, 0, 3), (7, 6, 5, 4)], AO)
+        vanh(P, 'dui_' + sd, [(hip + 0.02, 0.064, 0.07, x, 0), (knee, 0.048, 0.052, x, 0)], QUAN, n=6)
+
+    # ---- hông + vạt vest ngắn (tới giữa đùi trên), xẻ tà sau
     bo('hong')
-    box(P, (0.32, 0.22, 0.14), (0, 0, KK['hip'] + 0.02), AO)
+    vanh(P, 'hong', [(hip + 0.08, 0.15, 0.105, 0, 0), (hip - 0.03, 0.155, 0.11, 0, 0)], QUAN, n=8)
+    for sx in (-1, 1):                                                             # 2 nửa vạt, chừa xẻ trước
+        a0, a1 = (-math.pi / 2 + 0.12, math.pi / 2 - 0.06) if sx > 0 else (math.pi / 2 + 0.06, 3 * math.pi / 2 - 0.12)
+        vanh(P, 'vat_' + str(sx), [(hip + 0.1, 0.152, 0.108, 0, 0), (hip - 0.16, 0.168, 0.12, 0, 0.004)], VEST, n=5, a0=a0, a1=a1)
+    # ---- thân: vest ôm, vai hẹp hơi xuôi, eo thon
     bo('than')
-    t = cyl(P, 0.17, KK['chest'] - KK['hip'], (0, 0, (KK['chest'] + KK['hip']) / 2 + 0.02), AO, n=8, r2=0.215)
-    t.scale = (1, 0.62, 1)
-    box(P, (0.11, 0.02, 0.32), (0, -0.115, 1.55), C['giay'])                       # sơ mi trắng lộ ra
-    box(P, (0.045, 0.012, 0.27), (0, -0.128, 1.52), VAT)                           # cà vạt
-    box(P, (0.06, 0.014, 0.03), (0, -0.128, 1.665), VAT)
-    for sx in (-1, 1):                                                             # ve áo
-        box(P, (0.05, 0.02, 0.3), (sx * 0.07, -0.118, 1.55), AO, rot=(0, sx * 0.25, 0))
-        box(P, (0.1, 0.13, 0.05), (sx * KK['sh'], 0, KK['sh_z'] + 0.01), AO, bev=0.01)  # vai áo cứng
-    limb(P, (0.06, -0.125, 1.7), (0.1, -0.13, 1.4), 0.006, K, n=4)                # dây đeo thẻ
-    box(P, (0.07, 0.01, 0.095), (0.1, -0.132, 1.36), C['giay'])                   # thẻ trắng không tên
-    for i in range(4):                                                             # cúc áo
-        box(P, (0.02, 0.01, 0.02), (-0.045, -0.12, 1.12 + i * 0.09), K)
+    vanh(P, 'than', [(chest + 0.04, 0.075, 0.06, 0, 0.0),                         # chân cổ
+                     (chest - 0.01, 0.185, 0.1, 0, 0.0),                          # đường vai xuôi
+                     (chest - 0.13, 0.18, 0.115, 0, -0.005),                      # ngực
+                     (1.32, 0.145, 0.102, 0, 0.0),                                # eo thon
+                     (hip + 0.1, 0.152, 0.108, 0, 0.0)], VEST, n=8)
+    for sx in (-1, 1):
+        ball(P, 0.058, (sx * 0.19, 0.0, chest - 0.02), VEST, scale=(1.05, 1.0, 0.6))  # đầu vai
+    # sơ mi trắng chữ V sâu + cà vạt đen mảnh
+    mesh(P, 'somi', [(-0.07, -0.11, chest - 0.01), (0.07, -0.11, chest - 0.01), (0.0, -0.121, 1.36)], [(0, 2, 1)], SOMI)
+    mesh(P, 'cavat', [(-0.016, -0.123, chest - 0.04), (0.016, -0.123, chest - 0.04), (0.022, -0.125, 1.42),
+                      (0.0, -0.127, 1.385), (-0.022, -0.125, 1.42)], [(0, 4, 3, 2, 1)], VAT)
+    box(P, (0.036, 0.024, 0.028), (0, -0.117, chest - 0.025), VAT)                 # nút cà vạt
+    for sx in (-1, 1):                                                             # ve áo nhọn, hẹp
+        mesh(P, 've_' + str(sx), [(sx * 0.07, -0.113, chest - 0.005), (sx * 0.13, -0.11, chest - 0.1),
+                                   (sx * 0.05, -0.124, 1.43), (sx * 0.004, -0.123, 1.36)],
+             [(0, 3, 2, 1) if sx > 0 else (0, 1, 2, 3)], VE)
+    for z in (1.3, 1.22):                                                          # 2 cúc một hàng
+        box(P, (0.02, 0.01, 0.02), (0.012, -0.113, z), VE)
+    box(P, (0.07, 0.008, 0.045), (-0.11, -0.118, 1.5), SOMI)                       # thẻ kiểm kê trắng
+    for i in range(5):
+        box(P, (0.004 + (i % 2) * 0.004, 0.009, 0.026), (-0.13 + i * 0.01, -0.119, 1.497), K)
+    # cổ: cổ sơ mi trắng đứng
     bo('co')
-    limb(P, (0, 0.0, KK['chest']), (0, -0.06, KK['neck']), 0.04, S)               # cổ dài, đổ tới trước
-    box(P, (0.13, 0.1, 0.04), (0, -0.01, KK['chest'] + 0.02), C['giay'])           # cổ áo
+    vanh(P, 'co', [(KK['neck'] - 0.02, 0.034, 0.036, 0, -0.05), (chest, 0.04, 0.04, 0, 0)], DA, n=6)
+    vanh(P, 'co_ao', [(chest + 0.075, 0.058, 0.055, 0, -0.012), (chest + 0.01, 0.065, 0.06, 0, 0)], SOMI, n=8)
+
+    # ---- đầu: trứng trắng trơn không mặt, dải mắt đen in mã vạch, vạch laser đỏ cắt ngang
     bo('dau')
-    ball(P, 0.12, (0, -0.09, 2.0), S, scale=(0.88, 1.0, 1.28), sub=2)              # đầu trứng trơn
-    ball(P, 0.123, (0, -0.07, 2.06), C['toc'], scale=(0.9, 1.0, 0.82))             # tóc chải bết sát đầu
-    box(P, (0.16, 0.012, 0.06), (0, -0.2, 2.0), C['giay'], rot=(0.08, 0, 0))       # nhãn mã vạch thay cho mắt
-    for i, w in enumerate((0.008, 0.004, 0.012, 0.004, 0.006, 0.01, 0.004, 0.008, 0.005, 0.01)):
-        box(P, (w, 0.004, 0.045), (-0.062 + i * 0.0138, -0.207, 2.0), K, rot=(0.08, 0, 0))
-    # tay phải buông thõng, dài quá gối, ba ngón dài
+    hz = 2.02
+    ball(P, 0.112, (0, -0.085, hz), DA, scale=(0.84, 0.95, 1.36), sub=2)
+    ball(P, 0.048, (0, -0.06, hz - 0.12), DA, scale=(1.0, 0.9, 0.8))              # cằm nhọn
+    for (x, y, rz, w) in ((-0.062, -0.165, -0.62, 0.068), (0.0, -0.194, 0.0, 0.07), (0.062, -0.165, 0.62, 0.068)):
+        box(P, (w, 0.01, 0.052), (x, y, hz + 0.008), VAT, rot=(0.05, 0, rz))      # dải mắt đen 3 mảnh ôm mặt
+    for i, w in enumerate((0.005, 0.003, 0.008, 0.003, 0.005, 0.007, 0.003, 0.006, 0.004, 0.007, 0.003)):
+        box(P, (w, 0.004, 0.034), (-0.05 + i * 0.01, -0.2, hz + 0.008), SOMI, rot=(0.05, 0, 0))  # mã vạch trắng
+    for (x, y, rz, w) in ((-0.062, -0.1705, -0.62, 0.062), (0.0, -0.2015, 0.0, 0.07), (0.062, -0.1705, 0.62, 0.062)):
+        box(P, (w, 0.004, 0.005), (x, y, hz + 0.004), LASER, rot=(0, 0, rz))      # vạch laser đỏ
+
+    # ---- tay phải: buông thõng, dài quá gối, 3 ngón dài 2 đốt hơi quặp
     ex, ey, ez = KK['elbow_R']
     wx, wy, wz = KK['wrist_R']
     bo('tay_tren.R')
-    limb(P, (-KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.045, AO, r2=0.04)
+    limb(P, (-KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.043, VEST, n=6, r2=0.038)
     bo('tay_duoi.R')
-    ball(P, 0.04, (ex, ey, ez), AO)
-    limb(P, (ex, ey, ez), (wx, wy, wz), 0.04, AO, r2=0.034)
-    box(P, (0.045, 0.07, 0.09), (wx, wy, wz - 0.05), S)                            # lòng bàn tay
-    for fy in (-0.025, 0.0, 0.025):                                               # 3 ngón dài tới gối
-        limb(P, (wx, wy + fy, wz - 0.09), (wx + 0.012, wy + fy * 1.4, wz - 0.3), 0.011, S, n=4, r2=0.007)
-    # tay trái cầm máy quét kiểu súng, chĩa về trước
+    ball(P, 0.039, (ex, ey, ez), VEST, scale=(1, 1, 0.9))
+    limb(P, (ex, ey, ez), (wx, wy, wz + 0.03), 0.038, VEST, n=6, r2=0.036)
+    cyl(P, 0.031, 0.03, (wx, wy, wz + 0.02), SOMI, n=6)                           # cổ tay áo trắng
+    box(P, (0.034, 0.068, 0.1), (wx, wy, wz - 0.05), DA, bev=0.01)                 # bàn tay dài
+    for fy, L in ((-0.024, 1.0), (0.0, 1.12), (0.024, 0.95)):
+        a = (wx, wy + fy, wz - 0.095)
+        b = (wx + 0.004, wy + fy * 1.3 - 0.01, wz - 0.095 - 0.15 * L)
+        c = (wx + 0.006, wy + fy * 1.4 - 0.045, wz - 0.095 - 0.27 * L)
+        limb(P, a, b, 0.011, DA, n=4, r2=0.009)
+        ball(P, 0.01, b, DA)
+        limb(P, b, c, 0.009, DA, n=4, r2=0.003)
+    # ---- tay trái: cầm máy quét kiểu súng chĩa về trước
     ex, ey, ez = KK['elbow_L']
     wx, wy, wz = KK['wrist_L']
     bo('tay_tren.L')
-    limb(P, (KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.045, AO, r2=0.04)
+    limb(P, (KK['sh'], 0, KK['sh_z']), (ex, ey, ez), 0.043, VEST, n=6, r2=0.038)
     bo('tay_duoi.L')
-    ball(P, 0.04, (ex, ey, ez), AO)
-    limb(P, (ex, ey, ez), (wx, wy, wz), 0.04, AO, r2=0.034)
-    box(P, (0.055, 0.08, 0.07), (wx, wy - 0.04, wz - 0.02), S)
-    box(P, (0.045, 0.055, 0.15), (0.12, -0.44, 1.18), K, rot=(0.3, 0, 0))          # báng máy quét
-    box(P, (0.1, 0.16, 0.09), (0.12, -0.5, 1.27), C['nhua_xam'], bev=0.01)         # thân máy quét
-    box(P, (0.08, 0.01, 0.055), (0.12, -0.583, 1.27), C['den_do'])                 # cửa sổ quét đỏ
-    box(P, (0.05, 0.05, 0.012), (0.12, -0.47, 1.322), C['den_xanh'])               # màn hình nhỏ
+    ball(P, 0.039, (ex, ey, ez), VEST, scale=(1, 1, 0.9))
+    limb(P, (ex, ey, ez), (wx, wy + 0.03, wz), 0.038, VEST, n=6, r2=0.036)
+    cyl(P, 0.031, 0.03, (wx, wy + 0.015, wz), SOMI, n=6, rot=(math.pi / 2, 0, 0))
+    box(P, (0.046, 0.075, 0.065), (wx, wy - 0.045, wz - 0.02), DA, bev=0.01)
+    box(P, (0.042, 0.05, 0.15), (0.12, -0.44, 1.18), K, rot=(0.3, 0, 0), bev=0.008)  # báng máy quét
+    box(P, (0.1, 0.17, 0.09), (0.12, -0.5, 1.27), M('may_quet_vang', 0xe8b030, 0.5), bev=0.014)
+    box(P, (0.104, 0.06, 0.094), (0.12, -0.44, 1.27), K, bev=0.01)
+    box(P, (0.08, 0.01, 0.06), (0.12, -0.587, 1.27), C['den_do'])                  # cửa sổ quét đỏ
+    box(P, (0.05, 0.05, 0.012), (0.12, -0.47, 1.32), C['den_xanh'])
+    box(P, (0.016, 0.03, 0.035), (0.12, -0.46, 1.205), C['den_do'])
     return finish(P, 'nguoi_kiem_ke', 'Người Kiểm Kê',
-                  'Cao 2,15 m, gầy nhom, áo khoác dài xám chì tới gối (vạt áo bay theo bước chân), cà vạt đỏ sẫm. '
-                  'Đầu trơn không mặt, chỗ mắt là nhãn mã vạch. Tay phải dài quá gối, 3 ngón dài. Tay trái cầm '
-                  'máy quét kiểu súng, cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.')
+                  'Cảm hứng Slender Man: cao 2,15 m, mảnh khảnh, chân dài, vest đen ôm sát (vai hẹp xuôi, eo thon, ve nhọn), '
+                  'sơ mi trắng, cà vạt đen mảnh, quần âu, giày mũi nhọn. Đầu trứng trắng trơn không mặt, dải mắt đen in mã vạch '
+                  'trắng có vạch laser đỏ phát sáng. Tay phải dài quá gối, 3 ngón dài 2 đốt. Tay trái cầm máy quét vàng, '
+                  'cửa sổ đỏ ở độ cao 1,25 m (khớp SCANNER_Y). Thùng người chơi vác trên vai phải.')
 
 # 3. Nhân viên (người chơi nhìn thấy nhau)
 def nhan_vien():
@@ -369,7 +588,7 @@ TM_TANG = (0.215, 0.585, 0.955, 1.325, 1.695)   # mặt trên 5 tầng (đáy l�
 def tu_mat():
     P = []
     W, D, H = 1.0, 0.8, 2.1
-    V = C['vo_tu']
+    V = K['vo']
     T = C['trong_tu']
     box(P, (W, D, 0.06), (0, 0, H - 0.03), V)                                    # nóc
     box(P, (W, 0.04, H), (0, D / 2 - 0.02, H / 2), V)                             # lưng
@@ -385,13 +604,11 @@ def tu_mat():
     box(P, (W - 0.08, D - 0.12, 0.015), (0, 0.02, TM_TANG[0] - 0.0075), T)        # đáy lòng tủ
     for z in TM_TANG[1:]:
         box(P, (W - 0.1, D - 0.18, 0.015), (0, 0.04, z - 0.0075), C['thep'])      # kệ lưới
-        box(P, (W - 0.1, 0.008, 0.04), (0, -D / 2 + 0.13, z + 0.008), C['tem_gia'])  # nẹp giá phía trước
-        for x in (-0.3, 0.05, 0.3):
-            box(P, (0.06, 0.004, 0.025), (x, -D / 2 + 0.125, z + 0.008), C['giay'])
+        box(P, (W - 0.1, 0.008, 0.04), (0, -D / 2 + 0.13, z + 0.008), K['tem'])  # nẹp giá phía trước
     for x in (-(W / 2 - 0.08), (W / 2 - 0.08)):                                   # đèn LED dọc hai bên
         box(P, (0.018, 0.018, H - 0.5), (x, -D / 2 + 0.1, 0.22 + (H - 0.5) / 2), C['den_lanh'])
     box(P, (W - 0.12, 0.03, 0.02), (0, -D / 2 + 0.12, H - 0.1), C['den_lanh'])    # đèn ngang trên
-    box(P, (W, 0.08, 0.18), (0, -D / 2 + 0.03, H + 0.09), C['thuong_hieu'])       # bảng đèn trên nóc
+    box(P, (W, 0.08, 0.18), (0, -D / 2 + 0.03, H + 0.09), K['nhan_hieu'])       # bảng đèn trên nóc
     box(P, (W - 0.12, 0.01, 0.07), (0, -D / 2 - 0.015, H + 0.09), C['den_lanh'])
     for sx in (-1, 1):                                                            # 2 cánh cửa kính
         cx = sx * W / 4
@@ -416,18 +633,18 @@ KM_TANG = (0.64, 0.99, 1.31, 1.63)
 def ke_mat():
     P = []
     W, D, H = 1.25, 0.85, 2.0
-    V = C['vo_tu']
+    V = K['vo']
     T = C['trong_tu']
     for sx in (-1, 1):                                                            # hông bậc thang
         x = sx * (W / 2 - 0.02)
         box(P, (0.04, D, 0.9), (x, 0, 0.45), V)
         box(P, (0.04, D * 0.62, H - 0.9), (x, D * 0.19, 0.9 + (H - 0.9) / 2), V)
-        box(P, (0.042, 0.02, 0.9), (x, -D / 2 + 0.01, 0.45), C['thuong_hieu'])    # nẹp đỏ mép hông
+        box(P, (0.042, 0.02, 0.9), (x, -D / 2 + 0.01, 0.45), K['nhan_hieu'])    # nẹp đỏ mép hông
     box(P, (W, 0.05, H), (0, D / 2 - 0.025, H / 2), V)                            # lưng
     box(P, (W - 0.08, 0.01, H - 0.7), (0, D / 2 - 0.055, 0.68 + (H - 0.7) / 2), T)  # vách trong sáng
     box(P, (W, 0.14, 0.62), (0, -D / 2 + 0.07, 0.31), V)                          # mặt trước đế
     box(P, (W - 0.04, D - 0.2, 0.62), (0, 0.06, 0.31), C['nhua_xam'])             # khối máy
-    box(P, (W, 0.02, 0.08), (0, -D / 2 - 0.01, 0.42), C['thuong_hieu'])           # dải chắn va
+    box(P, (W, 0.02, 0.08), (0, -D / 2 - 0.01, 0.42), K['nhan_hieu'])           # dải chắn va
     for i in range(4):
         box(P, (W - 0.16, 0.004, 0.012), (0, -D / 2 - 0.002, 0.08 + i * 0.026), C['nhua_den'])  # lưới gió
     box(P, (W - 0.06, D - 0.14, 0.02), (0, 0.04, KM_TANG[0] - 0.01), T)            # khay đáy (tầng 1)
@@ -437,11 +654,9 @@ def ke_mat():
         d = 0.5 - i * 0.04
         yb = D / 2 - 0.06
         box(P, (W - 0.08, d, 0.02), (0, yb - d / 2, z - 0.01), C['thep'])
-        box(P, (W - 0.08, 0.008, 0.045), (0, yb - d - 0.004, z + 0.01), C['tem_gia'])
-        for x in (-0.4, 0, 0.4):
-            box(P, (0.06, 0.004, 0.025), (x, yb - d - 0.01, z + 0.012), C['giay'])
+        box(P, (W - 0.08, 0.008, 0.045), (0, yb - d - 0.004, z + 0.01), K['tem'])
     box(P, (W, 0.52, 0.06), (0, D / 2 - 0.26, H - 0.03), V)                       # mái che
-    box(P, (W, 0.04, 0.15), (0, D / 2 - 0.52, H - 0.075), C['thuong_hieu'])       # viền mái
+    box(P, (W, 0.04, 0.15), (0, D / 2 - 0.52, H - 0.075), K['nhan_hieu'])       # viền mái
     box(P, (W - 0.1, 0.01, 0.06), (0, D / 2 - 0.545, H - 0.075), C['den_lanh'])   # đèn viền
     box(P, (W - 0.1, 0.04, 0.015), (0, D / 2 - 0.4, H - 0.07), C['den_lanh'])     # đèn dưới mái
     cyl(P, 0.03, W - 0.1, (0, D / 2 - 0.46, H - 0.18), C['nhua_xam'], n=8, rot=(0, math.pi / 2, 0))  # rèm đêm cuộn
@@ -457,7 +672,7 @@ TD_DAY = 0.5   # đáy lòng tủ cao: hàng chất gần miệng tủ, nhìn qu
 def tu_dong():
     P = []
     W, D, H = 1.8, 0.9, 0.85
-    V = C['vo_tu']
+    V = K['vo']
     T = C['trong_tu']
     box(P, (W, 0.06, H), (0, -D / 2 + 0.03, H / 2), V)                            # 4 vách
     box(P, (W, 0.06, H), (0, D / 2 - 0.03, H / 2), V)
@@ -468,7 +683,7 @@ def tu_dong():
     box(P, (W - 0.14, 0.008, H - TD_DAY - 0.04), (0, -D / 2 + 0.065, TD_DAY + (H - TD_DAY) / 2 - 0.02), T)
     box(P, (W - 0.14, 0.008, H - TD_DAY - 0.04), (0, D / 2 - 0.065, TD_DAY + (H - TD_DAY) / 2 - 0.02), T)
     box(P, (0.025, D - 0.14, 0.3), (0, 0, TD_DAY + 0.15), C["thep"])               # vách ngăn giữa (2 ngăn)
-    box(P, (W + 0.02, D + 0.02, 0.07), (0, 0, 0.13), C['thuong_hieu'])            # dải chắn va quanh thân
+    box(P, (W + 0.02, D + 0.02, 0.07), (0, 0, 0.13), K['nhan_hieu'])            # dải chắn va quanh thân
     for i in range(4):
         box(P, (0.5, 0.004, 0.014), (W / 2 - 0.4, -D / 2 - 0.012, 0.25 + i * 0.03), C['nhua_den'])  # lưới gió
     box(P, (0.09, 0.004, 0.035), (-W / 2 + 0.16, -D / 2 - 0.002, H - 0.12), C['nhua_den'])
@@ -491,23 +706,36 @@ def tu_dong():
 # 6. Quầy thu ngân
 def quay_thu_ngan():
     P = []
-    box(P, (2.9, 1.2, 0.9), (0, 0, 0.45), C['thep_toi'], bev=0.01)
-    box(P, (3.0, 1.3, 0.05), (0, 0, 0.925), C['go'], bev=0.008)
-    box(P, (2.9, 0.01, 0.12), (0, -0.605, 0.72), C['thuong_hieu'])                # sọc đỏ thương hiệu
+    box(P, (2.9, 1.2, 0.9), (0, 0, 0.45), K['vo'], bev=0.01)                    # thân trắng
+    box(P, (2.92, 1.22, 0.1), (0, 0, 0.05), K['ke_chan'])                       # chân
+    box(P, (3.0, 1.3, 0.05), (0, 0, 0.925), K['go_sang'], bev=0.008)            # mặt gỗ sáng
+    box(P, (2.9, 0.01, 0.14), (0, -0.605, 0.72), K['nhan_hieu'])                # sọc đỏ thương hiệu
+    box(P, (2.9, 0.01, 0.04), (0, -0.605, 0.62), K['tem'])
     box(P, (1.4, 0.4, 0.02), (-0.6, -0.3, 0.96), C['cao_su'])                     # băng chuyền
+    box(P, (0.04, 0.4, 0.05), (-1.32, -0.3, 0.97), K['ke_xam'])
     box(P, (0.3, 0.3, 0.02), (0.3, -0.25, 0.96), C['kinh'])                       # mặt quét kính
     box(P, (0.28, 0.28, 0.015), (0.3, -0.25, 0.952), C['den_do'])
-    box(P, (0.5, 0.45, 0.12), (0.95, 0.15, 1.01), C['nhua_den'], bev=0.01)        # ngăn kéo tiền
-    limb(P, (0.95, 0.2, 1.07), (0.95, 0.25, 1.3), 0.025, C['nhua_xam'])           # chân màn hình
-    box(P, (0.42, 0.04, 0.3), (0.95, 0.2, 1.42), C['nhua_den'], rot=(-0.2, 0, 0))  # màn hình
-    box(P, (0.37, 0.01, 0.24), (0.95, 0.175, 1.425), C['den_lanh'], rot=(-0.2, 0, 0))
+    # máy tính tiền: thân + bàn phím nghiêng + màn hình quay về phía nhân viên
+    box(P, (0.46, 0.42, 0.12), (0.95, 0.15, 1.01), C['nhua_den'], bev=0.01)       # ngăn kéo tiền
+    box(P, (0.34, 0.2, 0.05), (0.95, 0.12, 1.1), C['nhua_xam'], rot=(0.25, 0, 0))  # bàn phím
+    limb(P, (0.95, 0.3, 1.07), (0.95, 0.3, 1.3), 0.025, C['nhua_xam'])            # chân màn hình
+    box(P, (0.42, 0.04, 0.3), (0.95, 0.3, 1.42), C['nhua_den'], rot=(-0.2, 0, 0))  # màn hình
+    box(P, (0.37, 0.01, 0.24), (0.95, 0.275, 1.425), C['den_lanh'], rot=(-0.2, 0, 0))
     box(P, (0.3, 0.3, 0.16), (1.2, -0.3, 1.03), C['nhua_den'], bev=0.01)          # máy in hoá đơn
     box(P, (0.08, 0.002, 0.2), (1.2, -0.452, 1.05), C['giay'], rot=(0.25, 0, 0))  # tờ hoá đơn thò ra
     box(P, (0.4, 0.04, 0.12), (-1.2, 0.1, 1.2), C['nhua_den'])                    # biển "QUẦY 1"
     box(P, (0.34, 0.01, 0.07), (-1.2, 0.075, 1.2), C['den_vang'])
     limb(P, (-1.2, 0.1, 0.95), (-1.2, 0.1, 1.14), 0.012, C['thep'])
+    # giá kẹo nhỏ ở đầu quầy phía khách (3 tầng hộp màu)
+    box(P, (0.06, 0.3, 0.5), (-1.42, -0.85, 0.25), K['ke_xam'])
+    for i, z in enumerate((0.12, 0.27, 0.42)):
+        box(P, (0.3, 0.3, 0.012), (-1.27, -0.85, z), K['ke'])
+        for j in range(4):
+            col = (0xd8342b, 0xf6cf3f, 0x4cae4f, 0x3f8fd2, 0x8e5bb5)[(i + j) % 5]
+            box(P, (0.06, 0.05, 0.09), (-1.38 + j * 0.075, -0.9, z + 0.051), M(f'hh_{col:06x}', col, 0.6))
     return finish(P, 'quay_thu_ngan', 'Quầy thu ngân',
-                  '3,0×1,3 m. Băng chuyền, mặt quét đỏ, màn hình, ngăn kéo tiền, máy in hoá đơn (chỗ in "phiếu chửi khéo").')
+                  '3,0×1,3 m, thân trắng sọc đỏ, mặt gỗ sáng. Băng chuyền, mặt quét đỏ, máy tính tiền, màn hình, '
+                  'máy in hoá đơn (chỗ in "phiếu chửi khéo"), giá kẹo nhỏ phía khách.')
 
 # 7. Bảng điều khiển tủ đông
 def bang_dong_lanh():
@@ -569,6 +797,190 @@ def may_quet():
     return finish(P, 'may_quet', 'Máy quét cầm tay',
                   'Cho tay người chơi (góc nhìn thứ nhất). Màn hình xanh hiện số đếm, cửa sổ đỏ phát tia khi giữ F.')
 
+# 11c. Tủ điện tổng ở PHÒNG ĐIỆN: tủ thép xám áp tường (mặt sau ở +Y), cửa mở toang sang trái (bản lề cạnh -X).
+#      Trong tủ: hàng 6 cầu dao đen có cần gạt trắng (cao 1,3 m), cầu dao tổng đỏ to bên dưới, sọc vàng đen.
+#      Mặt trong cửa dán tờ SƠ ĐỒ trắng (thứ tự bật cầu dao); mặt ngoài cửa có biển tam giác vàng "NGUY HIỂM ĐIỆN".
+TD_CAU_DAO = [(-0.3 + 0.12 * i, -0.105, 1.3) for i in range(6)]   # tâm từng cầu dao (toạ độ Blender)
+TD_TONG = (0.0, -0.105, 0.95)                                      # tâm cầu dao tổng đỏ
+
+def tu_dien():
+    P = []
+    W, H, D = 0.9, 1.8, 0.3
+    xam, xam_toi = HM(0x8d948f), HM(0x5d6462)
+    vang, den, trang = HM(0xf6cf3f), HM(0x1a1d1c), HM(0xf2f2ee)
+    box(P, (W, 0.02, H), (0, D / 2 - 0.01, 0.08 + H / 2), xam)                        # lưng tủ
+    for sx in (-1, 1):
+        box(P, (0.02, D, H), (sx * (W / 2 - 0.01), 0, 0.08 + H / 2), xam)            # hai vách
+    for z in (0.08, 0.08 + H):
+        box(P, (W, D, 0.03), (0, 0, z), xam)                                          # nóc, đáy
+    box(P, (W - 0.1, 0.06, 0.08), (0, 0, 0.04), xam_toi)                              # chân đế
+    box(P, (W - 0.06, 0.01, H - 0.06), (0, D / 2 - 0.025, 0.08 + H / 2), HM(0xc9ccc8))  # tấm gá bên trong (sáng)
+    # Hàng cầu dao
+    box(P, (0.8, 0.15, 0.72), (0, 0.05, 1.13), HM(0xb4b8b4))                          # khung gá thiết bị
+    box(P, (0.78, 0.02, 0.22), (0, -0.03, 1.3), xam_toi)                              # thanh ray
+    for (x, y, z) in TD_CAU_DAO:
+        box(P, (0.085, 0.07, 0.17), (x, y + 0.03, z), den)
+        box(P, (0.03, 0.03, 0.05), (x, y - 0.015, z + 0.03), trang)                  # cần gạt trắng (đang tắt: lên)
+        box(P, (0.05, 0.004, 0.018), (x, y - 0.005, z - 0.06), trang)  # nhãn số
+    # Cầu dao tổng đỏ
+    x, y, z = TD_TONG
+    box(P, (0.22, 0.08, 0.26), (x, y + 0.035, z), den)
+    box(P, (0.06, 0.08, 0.16), (x, y - 0.03, z), HM(0xd8342b))                       # tay gạt đỏ
+    # Sọc vàng đen dưới đáy tủ trong
+    for i in range(7):
+        box(P, (0.11, 0.012, 0.08), (-0.36 + i * 0.12, D / 2 - 0.035, 0.55), vang if i % 2 == 0 else den)
+    for i in range(3):                                                                # dây cáp đi lên nóc
+        cyl(P, 0.012, 0.6, (-0.25 + i * 0.05, D / 2 - 0.06, 1.55), den, n=6)
+    # Cửa mở ~100° quanh bản lề cạnh -X (cửa dày 2 cm, rộng W)
+    a = math.radians(100)
+    hx, hy = -W / 2, -D / 2                                                           # bản lề
+
+    ux, uy = math.cos(a), -math.sin(a)                                                # hướng dọc tấm cửa (từ bản lề ra mép)
+    cx, cy = hx + ux * W / 2, hy + uy * W / 2
+    rotz = -a
+    box(P, (W, 0.02, H), (cx, cy, 0.08 + H / 2), xam, rot=(0, 0, rotz))
+    nx, ny = -uy, ux                                                                  # pháp tuyến cửa
+    # mặt TRONG cửa (khi mở quay về phía người đứng trước tủ): tờ sơ đồ
+    inner = 1                                                                      # pháp tuyến n quay ra phía mở của tủ
+    ox, oy = nx * 0.012 * inner, ny * 0.012 * inner
+    box(P, (0.42, 0.004, 0.56), (cx + ox, cy + oy, 1.25), trang, rot=(0, 0, rotz))  # tờ sơ đồ
+    for i in range(6):                                                                # 6 ô cầu dao vẽ trên sơ đồ
+        for j, col in enumerate((den, HM(0xd8342b) if i % 2 else HM(0x2e9c4f))):
+            px = (i - 2.5) * 0.06
+            box(P, (0.04, 0.003, 0.05 if j == 0 else 0.02), (cx + ox * 1.15 + ux * px, cy + oy * 1.15 + uy * px, 1.36 - j * 0.07), col, rot=(0, 0, rotz))
+    for i in range(3):                                                                # dòng chữ
+        box(P, (0.3, 0.003, 0.012), (cx + ox * 1.15, cy + oy * 1.15, 1.12 - i * 0.05), HM(0x4a504e), rot=(0, 0, rotz))
+    for k in (-1, 1):                                                                 # băng keo dán sơ đồ
+        box(P, (0.08, 0.005, 0.03), (cx + ox * 1.3 + ux * k * 0.2, cy + oy * 1.3 + uy * k * 0.2, 1.52), C['bang_keo'], rot=(0, 0, rotz))
+    # mặt NGOÀI cửa: biển tam giác vàng + tay nắm
+    ex, ey = -ox, -oy
+    tg = mesh(P, 'tgd', [(-0.13, 0, -0.11), (0.0, 0, 0.12), (0.13, 0, -0.11)], [(0, 1, 2), (2, 1, 0)], vang)
+    tg.location = (cx + ex * 1.2, cy + ey * 1.2, 1.35)
+    tg.rotation_euler = (0, 0, rotz)
+    box(P, (0.025, 0.004, 0.08), (cx + ex * 1.4, cy + ey * 1.4, 1.36), den, rot=(0, 0, rotz))   # dấu chấm than
+    box(P, (0.025, 0.004, 0.025), (cx + ex * 1.4, cy + ey * 1.4, 1.29), den, rot=(0, 0, rotz))
+    hxx, hyy = hx + ux * (W - 0.06), hy + uy * (W - 0.06)
+    box(P, (0.025, 0.04, 0.16), (hxx + ex * 2.2, hyy + ey * 2.2, 1.0), C['thep'], rot=(0, 0, rotz))  # tay nắm
+    return finish(P, 'tu_dien', 'Tủ điện tổng',
+                  'Tủ thép xám 0,9×1,8 m áp tường, cửa mở. 6 cầu dao đen (cần gạt trắng) ở 1,3 m, cầu dao tổng đỏ ở 0,95 m, '
+                  'sơ đồ thứ tự bật dán mặt trong cửa, biển tam giác NGUY HIỂM ĐIỆN mặt ngoài.')
+
+# 11d. Rác: thùng rác nhựa xanh trong siêu thị, túi rác đen, xe thu gom rác, thùng rác lớn ở cửa sau kho.
+def thung_rac():
+    P = []
+    xanh, xanh_toi, den = HM(0x2e8b57), HM(0x1f6b42), HM(0x161818)
+    tien(P, [
+        (0.17, 0.0, xanh_toi), (0.185, 0.02, xanh), (0.205, 0.66, xanh_toi), (0.21, 0.68, den),
+        (0.205, 0.70, den),
+    ], n=12)
+    k = len(P)
+    box(P, (0.12, 0.004, 0.11), (0, -0.2, 0.44), HM(0xf2f2ee))                         # nhãn trắng
+    box(P, (0.045, 0.004, 0.045), (0, -0.203, 0.44), HM(0x2e8b57))                     # biểu tượng tái chế
+    uon(P[k:], 0.197)
+    tien(P, [(0.215, 0.70, xanh), (0.22, 0.72, xanh), (0.17, 0.79, xanh), (0.08, 0.81, xanh)], n=12, cap_bot=True)  # nắp vòm
+    box(P, (0.2, 0.012, 0.07), (0, -0.19, 0.76), den, rot=(0.6, 0, 0))                  # khe lật (cửa bập bênh)
+    return finish(P, 'thung_rac', 'Thùng rác',
+                  'Thùng nhựa xanh cao 0,8 m, đường kính 0,42 m, nắp vòm có khe lật, mép túi rác đen lộ dưới nắp.')
+
+def tui_rac():
+    P = []
+    den, den2 = HM(0x1a1d1c), HM(0x262a29)
+    b = ball(P, 0.18, (0, 0, 0.2), den, scale=(1.0, 0.85, 1.15), sub=2)
+    me = b.data
+    import random as _r
+    rr = _r.Random(7)
+    for v in me.vertices:                                                           # lồi lõm như túi đựng đồ
+        k = 1 + rr.uniform(-0.09, 0.09)
+        v.co = v.co * k
+        if v.co.z < -0.12:
+            v.co.z = -0.12 - (v.co.z + 0.12) * 0.2                                   # đáy bẹp
+    cyl(P, 0.04, 0.08, (0, 0, 0.42), den2, n=6, r2=0.02)                              # cổ túi thắt
+    for sx in (-1, 1):                                                               # hai tai nút buộc
+        o = ball(P, 0.035, (sx * 0.045, 0, 0.47), den2, scale=(1.4, 0.5, 0.8), sub=1)
+        o.rotation_euler = (0, sx * 0.6, 0)
+    return finish(P, 'tui_rac', 'Túi rác', 'Túi nilon đen buộc nút, rộng ~0,36 m, cao 0,5 m, lồi lõm.')
+
+def xe_rac():
+    P = []
+    xam, vang, den, thep = HM(0x6d7472), HM(0xf2c230), HM(0x161818), C['thep']
+    box(P, (0.6, 1.0, 0.05), (0, 0, 0.13), C['thep_toi'], bev=0.006)                  # khung sàn
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            cyl(P, 0.07, 0.04, (sx * 0.24, sy * 0.38, 0.07), C['cao_su'], n=10, rot=(0, math.pi / 2, 0))
+    box(P, (0.56, 0.8, 0.78), (0, -0.06, 0.55), xam, bev=0.01)                       # thùng xám
+    box(P, (0.5, 0.74, 0.02), (0, -0.06, 0.9), den)                                    # lòng thùng tối (thấp hơn miệng)
+    for sy in (-1, 1):                                                               # vành vàng (khung 4 thanh, miệng hở)
+        box(P, (0.6, 0.05, 0.06), (0, -0.06 + sy * 0.4, 0.95), vang)
+        box(P, (0.05, 0.84, 0.06), (sy * 0.29, -0.06, 0.95), vang)
+    box(P, (0.57, 0.004, 0.1), (0, -0.465, 0.6), vang)                                # sọc vàng phía trước
+    for i, (x, y) in enumerate(((-0.12, -0.2), (0.12, 0.05), (-0.05, 0.2))):         # túi rác lòi lên miệng thùng
+        o = ball(P, 0.15, (x, y, 0.92), HM(0x1a1d1c), scale=(1, 0.9, 0.85), sub=1)
+        o.rotation_euler = (0, 0, i)
+    for sx in (-1, 1):                                                               # tay đẩy phía sau (+Y)
+        limb(P, (sx * 0.24, 0.36, 0.2), (sx * 0.24, 0.48, 1.02), 0.016, thep, n=6)
+    limb(P, (-0.26, 0.48, 1.02), (0.26, 0.48, 1.02), 0.022, HM(0x2f7fc1), n=6)
+    box(P, (0.22, 0.02, 0.3), (0.3, -0.2, 0.55), vang, rot=(0, 0, 1.57))              # biển SÀN ƯỚT treo hông
+    box(P, (0.12, 0.022, 0.03), (0.302, -0.2, 0.6), den, rot=(0, 0, 1.57))
+    return finish(P, 'xe_rac', 'Xe thu gom rác',
+                  'Khung 0,6×1,0 m, thùng xám vành vàng cao ~1 m, túi rác đen lòi lên miệng, tay đẩy xanh phía sau (+Y) cao 1,02 m.')
+
+def thung_rac_lon():
+    P = []
+    xanh, xanh_toi, den = HM(0x24543a), HM(0x183a28), HM(0x161818)
+    box(P, (1.6, 1.0, 1.05), (0, 0, 0.62), xanh, bev=0.02)                            # thân
+    box(P, (1.64, 0.02, 0.12), (0, -0.505, 0.85), HM(0xf2f2ee))                      # dải chữ trắng
+    for i in range(5):
+        box(P, (0.18, 0.004, 0.05), (-0.55 + i * 0.27, -0.517, 0.85), xanh_toi)       # "chữ"
+    box(P, (1.68, 1.04, 0.04), (0, 0, 1.15), xanh_toi)                                # vành miệng
+    box(P, (0.8, 1.02, 0.03), (-0.4, 0, 1.19), xanh_toi, bev=0.005)                   # nắp trái đóng
+    box(P, (0.8, 1.02, 0.03), (0.4, 0.62, 1.55), xanh_toi, rot=(1.25, 0, 0), bev=0.005)  # nắp phải mở dựng lên
+    box(P, (0.75, 0.6, 0.02), (0.4, 0, 1.17), den)                                    # lòng thùng tối
+    o = ball(P, 0.22, (0.35, 0.1, 1.18), HM(0x1a1d1c), scale=(1.2, 1, 0.6), sub=1)     # túi rác ló lên
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            cyl(P, 0.07, 0.05, (sx * 0.68, sy * 0.38, 0.07), C['cao_su'], n=8, rot=(0, math.pi / 2, 0))
+    for sx in (-1, 1):
+        box(P, (0.06, 0.12, 0.06), (sx * 0.83, 0, 0.9), C['thep_toi'])                # tai móc nâng
+    return finish(P, 'thung_rac_lon', 'Thùng rác lớn (cửa sau)',
+                  'Thùng xanh đậm 1,6×1,0×1,25 m có bánh xe, nắp trái đóng, nắp phải mở dựng lên, dải chữ trắng.')
+
+# 11b. Kiện nước suối 60 chai 1,5 L (~90 kg): cồng kềnh, phải 2 người khiêng (1 người thì kéo lê rất chậm và ồn).
+#      Dài theo trục Y (trước-sau): khiêng đi theo chiều dài, mỗi người cầm một quai đai vàng ở hai đầu.
+def kien_nuoc():
+    P = []
+    L, W = 1.1, 0.48
+    xanh, xanh_dam, trang, vang, den = HM(0x9ad8ee), HM(0x2f7fc1), HM(0xf6f6f2), HM(0xf6cf3f), HM(0x1a1d1c)
+    box(P, (W, L, 0.05), (0, 0, 0.025), C['carton'], bev=0.006)                     # khay carton
+    box(P, (W - 0.01, L - 0.01, 0.26), (0, 0, 0.18), xanh)                           # thân chai bọc màng co
+    box(P, (W + 0.006, L + 0.006, 0.085), (0, 0, 0.19), xanh_dam)                   # đai nhãn xanh
+    box(P, (W + 0.008, L + 0.008, 0.016), (0, 0, 0.19), trang)                      # sọc trắng giữa nhãn
+    for k in range(11):                                                             # khe giữa các chai (hai mặt dài)
+        y = -L / 2 + 0.0917 * (k + 1)
+        for sx in (-1, 1):
+            box(P, (0.006, 0.012, 0.25), (sx * (W / 2 - 0.002), y, 0.18), HM(0x6fb6d6))
+    for k in range(4):                                                              # khe ở hai đầu
+        x = -W / 2 + 0.096 * (k + 1)
+        for sy in (-1, 1):
+            box(P, (0.012, 0.006, 0.25), (x, sy * (L / 2 - 0.002), 0.18), HM(0x6fb6d6))
+    for i in range(12):                                                             # vai chai + nắp (5 × 12 = 60 chai)
+        for j in range(5):
+            x, y = -W / 2 + 0.048 + j * 0.096, -L / 2 + 0.046 + i * 0.0917
+            cyl(P, 0.04, 0.05, (x, y, 0.335), xanh, n=6, r2=0.017)
+            cyl(P, 0.016, 0.022, (x, y, 0.37), xanh_dam, n=6)
+    for sy in (-1, 1):                                                              # quai đai vàng hai đầu
+        for sx in (-1, 1):
+            box(P, (0.025, 0.012, 0.3), (sx * 0.13, sy * (L / 2 + 0.008), 0.2), vang)
+            box(P, (0.025, 0.05, 0.02), (sx * 0.13, sy * (L / 2 + 0.03), 0.33), vang)
+        box(P, (0.3, 0.03, 0.03), (0, sy * (L / 2 + 0.05), 0.33), vang, bev=0.006)
+    for sx in (-1, 1):                                                              # nhãn vàng "2 NGƯỜI KHIÊNG" hai mặt dài
+        box(P, (0.004, 0.3, 0.1), (sx * (W / 2 + 0.006), 0, 0.075), vang)
+        for y in (-0.07, 0.07):
+            box(P, (0.003, 0.018, 0.05), (sx * (W / 2 + 0.009), y, 0.07), den)      # người que
+            box(P, (0.003, 0.022, 0.022), (sx * (W / 2 + 0.009), y, 0.108), den)
+        box(P, (0.003, 0.16, 0.012), (sx * (W / 2 + 0.009), 0, 0.085), den)          # cái kiện giữa hai người
+    return finish(P, 'kien_nuoc', 'Kiện nước suối (2 người khiêng)',
+                  'Dài 1,1 m, 60 chai 1,5 L bọc màng co (~90 kg), quai đai vàng hai đầu, nhãn vàng hình 2 người khiêng.')
+
 # 11. Xe đẩy hàng
 def xe_day():
     P = []
@@ -582,70 +994,491 @@ def xe_day():
     return finish(P, 'xe_day', 'Xe đẩy hàng',
                   '0,55×0,85 m, tay đẩy đỏ. Để ở kho; về sau có thể cho chở 2 thùng (nhanh hơn nhưng ồn).')
 
-# 12–16. Hàng hoá (rất nhẹ, dùng InstancedMesh hàng nghìn cái)
-def lon_nuoc():
-    P = []
-    cyl(P, 0.033, 0.11, (0, 0, 0.06), C['lon_do'], n=10)
-    cyl(P, 0.03, 0.01, (0, 0, 0.005), C['nhom'], n=10)
-    cyl(P, 0.03, 0.01, (0, 0, 0.12), C['nhom'], n=10)
-    return finish(P, 'hh_lon_nuoc', 'Lon nước ngọt', 'Cao 12,5 cm, 10 cạnh.')
+# 12+. Hàng hoá (rất nhẹ, dùng InstancedMesh hàng nghìn cái). Kiểu low-poly màu tươi, nhãn là các dải màu,
+#      MỖI MÓN CÓ MỘT HÌNH NHẬN DIỆN RIÊNG ở mặt trước (sóng, lát chanh, bát mì, con cá…) để phân biệt từ xa.
+#      Khi xuất, mọi màu của một món gộp vào màu đỉnh: mỗi loại hàng chỉ tốn 1 lệnh vẽ trong game.
+def HM(hexv, rough=0.6):
+    return M(f'hh_{hexv:06x}', hexv, rough)
 
-def hop_banh():
+FRONT = (math.pi / 2, 0, 0)   # xoay hình trụ dẹt để mặt tròn quay ra trước (-Y)
+
+def tron(P, r, x, y, z, col, n=8, sx=1.0, sz=1.0):
+    """Hình tròn dẹt dán lên mặt trước (y = mặt trước)."""
+    o = cyl(P, r, 0.004, (x, y, z), HM(col), n=n, rot=FRONT)
+    o.scale = (sx, 1, sz)
+    return o
+
+def tam_giac(P, pts, y, col):
+    """Tam giác phẳng dán mặt trước, pts = [(x, z)×3] theo chiều kim đồng hồ khi nhìn từ trước."""
+    mesh(P, 'tg', [(x, y, z) for x, z in pts], [(0, 1, 2)], HM(col))
+
+def lon(name, ten, than, soc, icon, mo_ta='Lon 12,4 cm.'):
+    """Lon tròn 14 cạnh bo mượt: đáy nhôm vát, thân thẳng có dải nhãn, cổ thắt lại, vành miệng nhôm."""
     P = []
-    box(P, (0.16, 0.06, 0.22), (0, 0, 0.11), C['banh_vang'])
-    box(P, (0.162, 0.062, 0.05), (0, 0, 0.07), C['banh_nau'])
-    box(P, (0.06, 0.004, 0.05), (0.03, -0.031, 0.16), C['thuong_hieu'])
-    return finish(P, 'hh_hop_banh', 'Hộp bánh quy', '16×22 cm.')
+    A, B, S = C['nhom'], HM(than), HM(soc)
+    tien(P, [
+        (0.024, 0.000, A), (0.033, 0.010, B),                                    # đáy vát
+        (0.033, 0.025, S), (0.033, 0.055, B),                                    # dải nhãn dưới
+        (0.033, 0.104, A), (0.0295, 0.115, A),                                   # cổ lon thắt dần
+        (0.0272, 0.121, A), (0.0276, 0.124, A),                                  # vành miệng
+    ], n=12)
+    box(P, (0.011, 0.019, 0.0025), (0, 0.006, 0.1252), C['nhom'])                # khoen mở lon
+    k = len(P)
+    icon(P, -0.0345)
+    uon(P[k:], 0.033)
+    return finish(P, name, ten, mo_ta)
+
+def icon_song(P, y):                                                            # sóng trắng chéo (cô-la)
+    for i, (x, z, a) in enumerate(((-0.007, 0.082, 0.5), (0.007, 0.075, -0.45), (0.0, 0.094, 0.35))):
+        box(P, (0.026 if i < 2 else 0.02, 0.003, 0.006), (x, y, z), HM(0xf6f6f2), rot=(0, a, 0))
+
+def icon_chanh(P, y):                                                           # lát chanh vàng có múi
+    tron(P, 0.016, 0, y, 0.085, 0xf6cf3f)
+    tron(P, 0.011, 0, y - 0.001, 0.085, 0xfdf3b0, n=6)
+    for a in (0.0, 1.05, 2.1):
+        box(P, (0.022, 0.003, 0.0025), (0, y - 0.002, 0.085), HM(0xf6cf3f), rot=(0, a, 0))
+
+def icon_cam_lon(P, y):                                                         # lát cam trên lon
+    tron(P, 0.016, 0, y, 0.085, 0xf28c28)
+    tron(P, 0.011, 0, y - 0.001, 0.085, 0xfdd27a, n=6)
+    for a in (0.0, 1.05, 2.1):
+        box(P, (0.022, 0.003, 0.0025), (0, y - 0.002, 0.085), HM(0xf28c28), rot=(0, a, 0))
+
+def icon_hat_cafe(P, y):                                                        # 2 hạt cà phê
+    for x in (-0.009, 0.009):
+        tron(P, 0.009, x, y, 0.085, 0x3a2216, n=6, sx=0.75, sz=1.25)
+        box(P, (0.002, 0.003, 0.016), (x, y - 0.002, 0.085), HM(0xc98a3a))
+
+def lon_cam():
+    return lon('hh_lon_cam', 'Lon soda cam', 0xf28c28, 0xf6f6f2, icon_cam_lon, 'Lon 12,4 cm, cam, dải trắng, hình lát cam.')
+
+def ca_phe_lon():
+    return lon('hh_ca_phe', 'Lon cà phê sữa', 0x5a3424, 0xe9dcc4, icon_hat_cafe, 'Lon 12,4 cm, nâu, dải kem, 2 hạt cà phê.')
+
+def icon_la_tra(P, y, z, r):                                                    # 2 lá trà
+    for x in (-0.007, 0.007):
+        tron(P, 0.008, x, y, z, 0x2e7d4f, n=6, sx=0.7, sz=1.6)
+
+def tra_xanh():
+    return chai('hh_tra_xanh', 'Chai trà xanh', 'Cao 26 cm, nước trà xanh nhạt, nhãn trắng có 2 lá trà, nắp xanh lá.',
+                0xb5d77a, 0xf6f6f2, 0x2e7d4f, icon=icon_la_tra)
+
+def lon_nuoc():
+    return lon('hh_lon_nuoc', 'Lon nước ngọt cô-la', 0xd8342b, 0xf6f6f2, icon_song,
+               'Lon 12,4 cm, đỏ, dải trắng dưới, hình sóng trắng chéo.')
+
+def lon_xanh():
+    return lon('hh_lon_xanh', 'Lon soda chanh', 0x4cae4f, 0xf6cf3f, icon_chanh,
+               'Lon 12,4 cm, xanh lá, dải vàng, hình lát chanh.')
+
+def chai(name, ten, mo_ta, than, nhan, nap, r=0.034, h=0.17, n=8, icon=None):
+    """Chai nhựa thon (tiện tròn 14 cạnh, bo mượt): đáy thót, thân có eo và gờ, nhãn quấn quanh,
+    vai cong dần lên cổ, khoen cổ, nắp có khía. r, h: bán kính và chiều cao thân kiểu cũ (giữ nguyên tổng chiều cao),
+    thân thật thon hơn 14%."""
+    P = []
+    r = r * 0.86
+    T, N, Q = HM(than), HM(nhan), HM(nap)
+    z0 = 0.012
+    zl0, zl1 = z0 + h * 0.27, z0 + h * 0.65      # nhãn
+    zs = z0 + h                                  # bắt đầu vai
+    zn = zs + h * 0.30                           # cổ
+    top = z0 + h * 1.32 + 0.024                  # đỉnh nắp (như cũ)
+    tien(P, [
+        (r * 0.78, 0.0, T), (r, 0.010, T),                                       # đáy thót
+        (r, zl0 - 0.0006, T), (r * 1.03, zl0, N), (r * 1.03, zl1, T),           # nhãn quấn
+        (r, zl1 + 0.0006, T), (r * 0.90, zl1 + h * 0.10, T), (r, zl1 + h * 0.2, T),  # eo cầm tay
+        (r * 0.93, zs + h * 0.07, T), (r * 0.74, zs + h * 0.16, T),             # vai cong
+        (r * 0.45, zs + h * 0.25, T), (r * 0.40, zn, T),                        # cổ
+        (r * 0.55, zn + 0.004, Q), (r * 0.47, zn + 0.005, Q), (r * 0.44, top, Q),  # khoen cổ + nắp
+    ], n=10)
+    if icon:
+        k = len(P)
+        icon(P, -(r * 1.03 + 0.0025), 0.012 + h * 0.46, r)
+        uon(P[k:], r * 1.03)
+    return finish(P, name, ten, mo_ta)
+
+def icon_nui(P, y, z, r):                                                       # núi tuyết (nước suối)
+    tam_giac(P, [(-0.022, z - 0.016), (0.0, z + 0.018), (0.022, z - 0.016)], y, 0xf6f6f2)
+    tam_giac(P, [(-0.006, z + 0.008), (0.0, z + 0.018), (0.006, z + 0.008)], y - 0.001, 0x9ad8ee)
+
+def icon_lat_cam(P, y, z, r):                                                   # lát cam
+    tron(P, r * 0.55, 0, y, z, 0xf6a21e)
+    tron(P, r * 0.42, 0, y - 0.001, z, 0xfdd27a, n=6)
+    for a in (0.0, 1.05, 2.1):
+        box(P, (r * 0.85, 0.003, 0.003), (0, y - 0.002, z), HM(0xf6a21e), rot=(0, a, 0))
+
+def icon_giot(P, y, z, r):                                                      # giọt dầu vàng
+    tron(P, 0.014, 0, y, z - 0.004, 0xf6d34a)
+    tam_giac(P, [(-0.0125, z - 0.002), (0.0, z + 0.024), (0.0125, z - 0.002)], y, 0xf6d34a)
+
+def icon_qua_cam(P, y, z, r):                                                   # quả cam + lá
+    tron(P, 0.016, 0, y, z, 0xf28c28)
+    box(P, (0.014, 0.003, 0.007), (0.01, y - 0.001, z + 0.017), HM(0x3a9c3a), rot=(0, -0.5, 0))
 
 def chai_nuoc():
+    return chai('hh_chai_nuoc', 'Chai nước suối', 'Cao 26 cm, nhãn xanh dương có núi tuyết, nắp trắng.',
+                0x9ad8ee, 0x2f7fc1, 0xf6f6f2, icon=icon_nui)
+
+def chai_ngot():
+    return chai('hh_chai_ngot', 'Chai nước cam 1,5 L', 'Cao 32 cm, to bè, nhãn xanh lá có lát cam.',
+                0xf28c28, 0x2e9c4f, 0x2e9c4f, r=0.045, h=0.22, icon=icon_lat_cam)
+
+def nuoc_cam():
+    return chai('hh_nuoc_cam', 'Chai nước ép cam', 'Cao 23 cm, nhãn trắng có quả cam. Bày trong tủ mát.',
+                0xf6a21e, 0xf6f6f2, 0x3a9c3a, h=0.15, icon=icon_qua_cam)
+
+def dau_an():
+    return chai('hh_dau_an', 'Chai dầu ăn', 'Cao 29 cm, vàng óng, nắp đỏ, nhãn xanh có giọt dầu.',
+                0xf2c230, 0x3a9c3a, 0xd8342b, r=0.038, h=0.19, icon=icon_giot)
+
+def hop(name, ten, mo_ta, w, d, h, than, dai, logo, bev=0.0):
     P = []
-    cyl(P, 0.034, 0.16, (0, 0, 0.08), C['chai_xanh'], n=8)
-    cyl(P, 0.0345, 0.05, (0, 0, 0.08), C['nap_trang'], n=8)                     # nhãn
-    cyl(P, 0.034, 0.05, (0, 0, 0.185), C['chai_xanh'], n=8, r2=0.014)
-    cyl(P, 0.016, 0.02, (0, 0, 0.22), C['nap_trang'], n=8)
-    return finish(P, 'hh_chai_nuoc', 'Chai nước suối', 'Cao 23 cm.')
+    box(P, (w, d, h), (0, 0, h / 2), HM(than), bev=bev)
+    box(P, (w + 0.002, d + 0.002, h * 0.2), (0, 0, h * 0.24), HM(dai))           # dải màu ngang
+    box(P, (w * 0.5, 0.003, h * 0.16), (0, -d / 2 - 0.0015, h * 0.84), HM(logo))  # logo chữ
+    return P
+
+def hop_banh_v(name, ten, mo_ta, than, dai, logo, banh, hat):
+    P = hop(name, '', '', 0.16, 0.06, 0.22, than, dai, logo)
+    y = -0.032
+    for (x, z) in ((-0.03, 0.115), (0.03, 0.135)):                              # 2 chiếc bánh quy
+        tron(P, 0.03, x, y, z, banh, n=8)
+        for (dx, dz) in ((-0.01, 0.006), (0.011, -0.004), (0.0, -0.013)):
+            box(P, (0.007, 0.003, 0.007), (x + dx, y - 0.003, z + dz), HM(hat))   # hạt trên bánh
+    return finish(P, name, ten, mo_ta)
+
+def hop_banh():
+    return hop_banh_v('hh_hop_banh', 'Hộp bánh quy bơ', '16×22 cm, vàng, dải nâu, 2 bánh quy có hạt sô-cô-la.',
+                      0xf6cf3f, 0x7a4a2a, 0xd8342b, 0xc98a3a, 0x4a2a16)
+
+def banh_dua():
+    return hop_banh_v('hh_banh_dua', 'Hộp bánh quy dừa', '16×22 cm, xanh dương nhạt, dải trắng, 2 bánh quy rắc dừa trắng.',
+                      0x6fb7e0, 0xf6f6f2, 0x2f7fc1, 0xe0b878, 0xf6f6f2)
+
+def ngu_coc():
+    P = hop('hh_ngu_coc', '', '', 0.19, 0.065, 0.27, 0xe0463c, 0xf6cf3f, 0xf6f6f2)
+    y = -0.0345
+    tron(P, 0.055, 0, y, 0.115, 0xf6f6f2, n=10, sz=0.55)                         # bát
+    for (x, z) in ((-0.025, 0.135), (0.0, 0.142), (0.025, 0.134), (-0.012, 0.128), (0.014, 0.127)):
+        tron(P, 0.009, x, y - 0.002, z, 0xe8a33c, n=6)                           # hạt ngũ cốc
+    box(P, (0.006, 0.003, 0.06), (0.045, y - 0.003, 0.15), HM(0xc7cbcc), rot=(0, 0.5, 0))  # thìa
+    return finish(P, 'hh_ngu_coc', 'Hộp ngũ cốc', '19×27 cm, đỏ, bát ngũ cốc có thìa.')
+
+def socola():
+    P = hop('hh_socola', '', '', 0.09, 0.028, 0.16, 0x6b3a22, 0xd4a537, 0xe0463c)
+    for i in range(2):
+        for j in range(3):                                                      # thanh sô-cô-la lộ ô
+            box(P, (0.026, 0.005, 0.022), (-0.015 + i * 0.03, -0.016, 0.07 + j * 0.026), HM(0x4a2716))
+    return finish(P, 'hh_socola', 'Thanh sô-cô-la sữa', '9×16 cm, nâu, dải vàng kim, lộ 6 ô sô-cô-la.')
+
+def goi_mi_v(name, ten, mo_ta, goi, dai, ot=True):
+    P = []
+    box(P, (0.15, 0.045, 0.12), (0, 0, 0.06), HM(goi), bev=0.012)
+    box(P, (0.152, 0.047, 0.03), (0, 0, 0.098), HM(dai))                         # dải màu trên
+    y = -0.025
+    tron(P, 0.028, 0.025, y, 0.045, 0xf6f6f2, n=8, sz=0.6)                       # bát mì
+    for k in range(3):
+        box(P, (0.04, 0.003, 0.004), (0.025, y - 0.002, 0.05 + k * 0.006), HM(0xf6cf3f))  # sợi mì
+    for a in (0.55, 0.75):
+        box(P, (0.004, 0.003, 0.055), (0.045, y - 0.003, 0.068), HM(0x8a6238), rot=(0, a, 0))  # đôi đũa
+    if ot:
+        tron(P, 0.006, -0.045, y, 0.05, 0xb3261e, n=6, sz=2.2)                   # quả ớt
+    else:
+        tron(P, 0.012, -0.042, y, 0.052, 0xc98a3a, n=6)                           # đùi gà
+        box(P, (0.006, 0.003, 0.016), (-0.042, y - 0.002, 0.036), HM(0xf6f6f2))
+    return finish(P, name, ten, mo_ta)
 
 def goi_mi():
-    P = []
-    box(P, (0.15, 0.045, 0.12), (0, 0, 0.06), C['mi_cam'], bev=0.012)
-    box(P, (0.152, 0.047, 0.035), (0, 0, 0.085), C['mi_do'])
-    box(P, (0.04, 0.003, 0.03), (-0.04, -0.024, 0.035), C['nap_trang'])
-    return finish(P, 'hh_goi_mi', 'Gói mì', '15×12 cm.')
+    return goi_mi_v('hh_goi_mi', 'Gói mì tôm chua cay', '15×12 cm, cam, dải đỏ, bát mì có đũa và quả ớt.', 0xf28c28, 0xd8342b)
+
+def goi_mi_ga():
+    return goi_mi_v('hh_mi_ga', 'Gói mì gà', '15×12 cm, vàng, dải xanh lá, bát mì có đũa và đùi gà.', 0xf6cf3f, 0x2e9c4f, ot=False)
 
 def hop_sua():
     P = []
     w, d, h, g = 0.07, 0.07, 0.15, 0.03
-    box(P, (w, d, h), (0, 0, h / 2), C['sua_trang'])
-    box(P, (w + 0.002, d + 0.002, 0.05), (0, 0, 0.06), C['sua_xanh'])
+    box(P, (w, d, h), (0, 0, h / 2), HM(0xf6f6f2))
+    box(P, (w + 0.002, d + 0.002, 0.04), (0, 0, 0.02), HM(0x3f8fd2))
+    for (x, z, s) in ((-0.018, 0.1, 0.016), (0.016, 0.075, 0.012), (0.02, 0.12, 0.009)):
+        box(P, (s, 0.003, s * 0.8), (x, -d / 2 - 0.0015, z), HM(0x1e1e1e))       # đốm bò sữa
+    box(P, (0.022, 0.003, 0.016), (-0.012, -d / 2 - 0.0015, 0.055), HM(0x4cae4f))  # lá xanh
     v = [(-w / 2, -d / 2, h), (w / 2, -d / 2, h), (w / 2, d / 2, h), (-w / 2, d / 2, h), (-w / 2, 0, h + g), (w / 2, 0, h + g)]
     f = [(0, 1, 5, 4), (2, 3, 4, 5), (0, 4, 3), (1, 2, 5)]
-    mesh(P, 'mai_hop', v, f, C['sua_trang'])
-    box(P, (w, 0.006, 0.012), (0, 0, h + g + 0.004), C['sua_trang'])
-    return finish(P, 'hh_hop_sua', 'Hộp sữa giấy', 'Cao 18 cm, nắp mái nhà.')
+    mesh(P, 'mai_hop', v, f, HM(0x3f8fd2))
+    box(P, (w, 0.006, 0.012), (0, 0, h + g + 0.004), HM(0x3f8fd2))
+    return finish(P, 'hh_hop_sua', 'Hộp sữa tươi', 'Cao 18 cm, trắng có đốm bò sữa, mái và đáy xanh dương.')
+
+def snack_v(name, ten, mo_ta, goi, mep, dia, lat, bang, ot=False):
+    P = []
+    box(P, (0.16, 0.07, 0.2), (0, 0, 0.11), HM(goi), bev=0.028)                  # gói phồng
+    for z in (0.012, 0.208):
+        box(P, (0.162, 0.018, 0.022), (0, 0, z), HM(mep))                         # mép hàn
+    y = -0.043
+    box(P, (0.11, 0.003, 0.03), (0, y, 0.16), HM(bang))                           # băng rôn tên
+    tron(P, 0.04, 0, y, 0.095, dia, n=10)                                        # đĩa logo
+    for (x, z, a) in ((-0.016, 0.1, 0.4), (0.014, 0.104, -0.5), (0.0, 0.084, 0.1)):
+        box(P, (0.026, 0.003, 0.018), (x, y - 0.003, z), HM(lat), rot=(0, a, 0))  # lát snack
+    if ot:
+        for x in (-0.047, 0.047):
+            tron(P, 0.007, x, y, 0.06, 0xb3261e, n=6, sz=2.4)                     # quả ớt
+    return finish(P, name, ten, mo_ta)
+
+def snack():
+    return snack_v('hh_snack', 'Gói snack khoai tây', '16×22 cm, gói phồng tím, đĩa vàng có lát khoai, băng rôn đỏ.',
+                   0x8e5bb5, 0x6a3f8f, 0xf6cf3f, 0xe8a33c, 0xe0463c)
+
+def snack_rong_bien():
+    return snack_v('hh_snack_rong', 'Snack rong biển', '16×22 cm, gói xanh lá đậm, đĩa trắng có lá rong biển xanh đen.',
+                   0x2e7d4f, 0x1f5a37, 0xf6f6f2, 0x1f3a2a, 0xf6cf3f)
+
+def snack_cay():
+    return snack_v('hh_snack_cay', 'Snack cay', '16×22 cm, gói đỏ rực, đĩa vàng, lát snack cam, 2 quả ớt.',
+                   0xc62828, 0x8e1c1c, 0xf6cf3f, 0xf28c28, 0x1e1e1e, ot=True)
+
+def do_hop():
+    P = []
+    cyl(P, 0.04, 0.074, (0, 0, 0.045), HM(0x2e9c4f), n=8)
+    cyl(P, 0.0405, 0.016, (0, 0, 0.022), HM(0xf28c28), n=8)
+    cyl(P, 0.038, 0.008, (0, 0, 0.004), C['nhom'], n=8, r2=0.04)
+    cyl(P, 0.04, 0.008, (0, 0, 0.086), C['nhom'], n=8, r2=0.037)
+    y = -0.0415
+    tron(P, 0.015, -0.004, y, 0.055, 0xc7cbcc, n=8, sx=1.5, sz=0.8)              # thân cá bạc
+    tam_giac(P, [(0.016, 0.055), (0.032, 0.068), (0.032, 0.042)], y, 0xc7cbcc)    # đuôi cá
+    box(P, (0.004, 0.003, 0.004), (-0.02, y - 0.003, 0.058), HM(0x1e1e1e))       # mắt cá
+    return finish(P, 'hh_do_hop', 'Cá hộp sốt cà', 'Lon thấp 9 cm, nhãn xanh lá dải cam, hình con cá bạc.')
+
+def nuoc_tay_v(name, ten, mo_ta, than, sao):
+    P = []
+    box(P, (0.085, 0.052, 0.17), (0, 0, 0.085), HM(than), bev=0.014)
+    box(P, (0.06, 0.003, 0.08), (0, -0.0275, 0.08), HM(0xf6f6f2))                 # nhãn
+    for a in (0.0, 0.785, 1.57, 2.36):
+        box(P, (0.034 if a in (0.0, 1.57) else 0.022, 0.003, 0.005), (0, -0.0295, 0.09), HM(sao), rot=(0, a, 0))  # ngôi sao lấp lánh
+    box(P, (0.04, 0.003, 0.01), (0, -0.0295, 0.05), HM(0xe0463c))
+    cyl(P, 0.016, 0.03, (0, 0, 0.185), HM(0xf6f6f2), n=8)                         # cổ
+    box(P, (0.034, 0.075, 0.035), (0, -0.016, 0.215), HM(0xf6f6f2), bev=0.006)    # đầu vòi xịt
+    box(P, (0.014, 0.02, 0.035), (0, -0.03, 0.188), HM(0xe0463c))                 # cò bóp
+    box(P, (0.016, 0.012, 0.016), (0, -0.058, 0.215), HM(0xe0463c))               # vòi
+    return finish(P, name, ten, mo_ta)
+
+def nuoc_tay():
+    return nuoc_tay_v('hh_nuoc_tay', 'Bình xịt tẩy rửa', 'Cao 23 cm, xanh dương, nhãn trắng có ngôi sao vàng, đầu xịt trắng cò đỏ.', 0x3f8fd2, 0xf6cf3f)
+
+def lau_san():
+    return nuoc_tay_v('hh_lau_san', 'Bình nước lau sàn', 'Cao 23 cm, hồng, nhãn trắng có ngôi sao tím, đầu xịt trắng cò đỏ.', 0xe86aa0, 0x8e5bb5)
+
+def nuoc_giat():
+    P = []
+    box(P, (0.13, 0.085, 0.21), (0, 0, 0.105), HM(0xf28c28), bev=0.02)
+    box(P, (0.024, 0.06, 0.07), (0.035, 0, 0.215), HM(0xf28c28), bev=0.008)       # quai cầm
+    cyl(P, 0.022, 0.03, (-0.03, 0, 0.222), HM(0x3f8fd2), n=8)                     # nắp
+    box(P, (0.09, 0.003, 0.1), (0, -0.0435, 0.1), HM(0xf6f6f2))                   # nhãn
+    for (x, z, r) in ((-0.018, 0.09, 0.016), (0.016, 0.11, 0.012), (0.012, 0.075, 0.008), (-0.01, 0.125, 0.007)):
+        tron(P, r, x, -0.046, z, 0x8fd3ea, n=6)                                   # bong bóng xà phòng
+    return finish(P, 'hh_nuoc_giat', 'Can nước giặt', 'Cao 24 cm, cam, quai cầm, nắp xanh, nhãn trắng có bong bóng.')
 
 # Hàng lạnh
 def kem_hop():
     P = []
-    cyl(P, 0.058, 0.075, (0, 0, 0.0375), C['kem_hong'], n=10, r2=0.064)
-    cyl(P, 0.066, 0.014, (0, 0, 0.082), C['nap_trang'], n=10)
-    box(P, (0.05, 0.004, 0.03), (0, -0.061, 0.04), C['kem_nau'], rot=(0.08, 0, 0))
-    return finish(P, 'hh_kem', 'Hộp kem', 'Hộp tròn 13 cm, cao 9 cm. Xếp chồng trong tủ đông.')
+    cyl(P, 0.058, 0.075, (0, 0, 0.0375), HM(0xee8fb0), n=10, r2=0.064)
+    cyl(P, 0.066, 0.014, (0, 0, 0.082), HM(0xf6f6f2), n=10)
+    cyl(P, 0.04, 0.003, (0, 0, 0.09), HM(0xe0463c), n=8)                          # quả dâu trên nắp
+    y = -0.062
+    tam_giac(P, [(-0.012, 0.045), (0.0, 0.012), (0.012, 0.045)], y, 0xc98a3a)      # ốc quế
+    tron(P, 0.014, 0, y, 0.05, 0xf6f6f2, n=6)                                     # viên kem
+    return finish(P, 'hh_kem', 'Hộp kem dâu', 'Hộp tròn 13 cm, cao 9 cm, hồng nắp trắng, quả dâu trên nắp, ốc quế phía trước.')
 
 def goi_dong():
     P = []
-    box(P, (0.2, 0.27, 0.045), (0, 0, 0.0225), C['dong_xanh'], bev=0.012)          # túi nằm phẳng
-    box(P, (0.13, 0.11, 0.004), (0, -0.05, 0.046), C['dong_trang'])                # cửa sổ thấy hàng
-    box(P, (0.202, 0.04, 0.03), (0, 0.1, 0.022), C['mi_do'])                       # dải đỏ
-    return finish(P, 'hh_goi_dong', 'Gói đồ đông lạnh', '20×27 cm, nằm phẳng (sủi cảo, xúc xích). Xếp lớp trong tủ đông.')
+    box(P, (0.2, 0.27, 0.045), (0, 0, 0.0225), HM(0x2f7fc1), bev=0.012)          # túi nằm phẳng
+    box(P, (0.13, 0.11, 0.004), (0, -0.05, 0.046), HM(0xeef3f5))                  # cửa sổ thấy hàng
+    for (x, y) in ((-0.035, -0.05), (0.0, -0.035), (0.035, -0.055)):
+        ball(P, 0.022, (x, y, 0.048), HM(0xf1e2c4), scale=(1.3, 0.9, 0.45))       # sủi cảo
+    box(P, (0.202, 0.04, 0.03), (0, 0.1, 0.022), HM(0xd8342b))                    # dải đỏ
+    return finish(P, 'hh_goi_dong', 'Gói sủi cảo đông lạnh', '20×27 cm, nằm phẳng, xanh dương, cửa sổ thấy 3 viên sủi cảo.')
+
+def pizza():
+    P = []
+    box(P, (0.28, 0.28, 0.04), (0, 0, 0.02), HM(0xd8342b), bev=0.004)
+    cyl(P, 0.1, 0.003, (0.02, 0.02, 0.041), HM(0xf2a640), n=12)                   # hình bánh pizza
+    for (x, y) in ((-0.02, 0.05), (0.06, 0.0), (0.0, -0.04), (0.06, 0.07)):
+        cyl(P, 0.016, 0.003, (x, y, 0.043), HM(0xa82a24), n=6)
+    box(P, (0.28, 0.05, 0.003), (0, -0.11, 0.041), HM(0xf6f6f2))
+    return finish(P, 'hh_pizza', 'Hộp pizza đông lạnh', '28×28 cm, dày 4 cm, nằm phẳng trong tủ đông.')
 
 def sua_chua():
     P = []
     for x in (-0.034, 0.034):
         for y in (-0.034, 0.034):
-            cyl(P, 0.031, 0.06, (x, y, 0.03), C['sua_trang'], n=8, r2=0.027)
-            cyl(P, 0.029, 0.004, (x, y, 0.062), C['nhom'], n=8)
-    box(P, (0.14, 0.14, 0.025), (0, 0, 0.03), C['sc_vang'])                        # đai giấy lốc 4
-    return finish(P, 'hh_sua_chua', 'Lốc sữa chua', '4 hũ, 14×14 cm, cao 6,5 cm. Bày ở ngăn mát.')
+            cyl(P, 0.031, 0.06, (x, y, 0.03), HM(0xf6f6f2), n=8, r2=0.027)
+            cyl(P, 0.029, 0.004, (x, y, 0.062), HM(0xee8fb0), n=8)                # nắp hồng
+    box(P, (0.14, 0.14, 0.025), (0, 0, 0.03), HM(0xee8fb0))                      # đai giấy lốc 4
+    tron(P, 0.009, 0, -0.072, 0.03, 0xe0463c, n=6, sz=1.2)                         # quả dâu trên đai
+    box(P, (0.012, 0.003, 0.004), (0, -0.074, 0.042), HM(0x3a9c3a))
+    return finish(P, 'hh_sua_chua', 'Lốc sữa chua dâu', '4 hũ nắp hồng, 14×14 cm, cao 6,5 cm, đai hồng có quả dâu. Bày ở ngăn mát.')
+
+def sua_tuoi():
+    P = []
+    box(P, (0.09, 0.09, 0.19), (0, 0, 0.095), HM(0xf6f6f2), bev=0.014)
+    box(P, (0.092, 0.092, 0.05), (0, 0, 0.05), HM(0x3f8fd2))
+    cyl(P, 0.02, 0.03, (0.018, 0.018, 0.2), HM(0x3f8fd2), n=8)
+    for (x, z, s) in ((-0.02, 0.13, 0.018), (0.018, 0.115, 0.013), (0.01, 0.155, 0.01)):
+        box(P, (s, 0.003, s * 0.8), (x, -0.0465, z), HM(0x1e1e1e))                # đốm bò sữa
+    return finish(P, 'hh_sua_tuoi', 'Bình sữa tươi 1 L', 'Cao 21 cm, trắng có đốm bò sữa, dải và nắp xanh dương.')
+
+# Khu rau quả: kệ gỗ nghiêng bày 3 sọt, quả đã đặt sẵn trong model (1 lệnh vẽ cho cả kệ).
+import random
+
+def nghieng(objs, pivot, a):
+    """Xoay các khối quanh trục X đi qua pivot (a > 0: phía sau +Y nâng lên)."""
+    bpy.context.view_layer.update()
+    from mathutils import Matrix
+    T = Matrix.Translation(Vector(pivot)) @ Matrix.Rotation(a, 4, 'X') @ Matrix.Translation(-Vector(pivot))
+    for o in objs:
+        o.matrix_world = T @ o.matrix_world
+
+def qua(P, kind, x, y, z, rnd):
+    if kind == 'tao':
+        o = ball(P, 0.042, (x, y, z), HM(rnd.choice((0xd8342b, 0xb3261e, 0xe0463c))), scale=(1, 1, 0.88))
+    elif kind == 'cam':
+        o = ball(P, 0.043, (x, y, z), HM(rnd.choice((0xf28c28, 0xf6a21e))))
+    elif kind == 'ca_chua':
+        o = ball(P, 0.038, (x, y, z), HM(0xe0463c), scale=(1, 1, 0.8))
+        box(P, (0.022, 0.022, 0.006), (x, y, z + 0.03), HM(0x3a9c3a))
+    elif kind == 'khoai':
+        o = ball(P, 0.042, (x, y, z), HM(rnd.choice((0xb58a55, 0xa47a4a))), scale=(1.35, 1, 0.8))
+        o.rotation_euler = (0, 0, rnd.uniform(0, 3.14))
+    elif kind == 'bap_cai':
+        ball(P, 0.075, (x, y, z + 0.02), HM(0x8cc65a))
+        o = ball(P, 0.05, (x, y, z + 0.075), HM(0xc4e38a), scale=(1, 1, 0.7))
+    elif kind == 'dua':
+        ball(P, 0.055, (x, y, z + 0.035), HM(0xc9862a), scale=(1, 1, 1.45))
+        o = cyl(P, 0.04, 0.11, (x, y, z + 0.16), HM(0x3a9c3a), n=5, r2=0.0)
+    elif kind == 'chuoi':                                                       # nải 4 quả xoè
+        for k in range(4):
+            a = -0.45 + k * 0.3
+            b = ball(P, 0.026, (x + math.sin(a) * 0.03, y + math.cos(a) * 0.03 - 0.03, z), HM(0xf6cf3f), scale=(1, 3.3, 0.9))
+            b.rotation_euler = (0, 0, a)
+        o = box(P, (0.03, 0.03, 0.03), (x, y - 0.1, z), HM(0x5a7a2a))
+    return o
+
+KIEU_QUA = {  # kind: (khoảng cách, số lớp)
+    'tao': (0.088, 2), 'cam': (0.09, 2), 'ca_chua': (0.08, 2), 'khoai': (0.1, 2),
+    'bap_cai': (0.16, 1), 'dua': (0.13, 1), 'chuoi': (0.17, 1),
+}
+TEN_QUA = {'tao': 'táo', 'cam': 'cam', 'ca_chua': 'cà chua', 'khoai': 'khoai tây', 'bap_cai': 'bắp cải', 'dua': 'dứa', 'chuoi': 'chuối'}
+
+def ke_rau_qua(name, kinds, seed):
+    P = []
+    rnd = random.Random(seed)
+    W, D = 1.8, 1.1
+    G = K['go_sang']
+    GD = K['go_dam']
+    for sx in (-1, 1):                                                          # khung chân gỗ
+        for sy in (-1, 1):
+            box(P, (0.07, 0.07, 0.72 if sy < 0 else 0.86), (sx * (W / 2 - 0.05), sy * (D / 2 - 0.05), (0.72 if sy < 0 else 0.86) / 2), GD)
+    box(P, (W, 0.04, 0.5), (0, -D / 2 + 0.02, 0.36), K['nhan_hieu2'])           # tấm chắn trước xanh lá
+    box(P, (W, 0.045, 0.06), (0, -D / 2 + 0.02, 0.64), GD)                      # nẹp trên
+    box(P, (W - 0.1, D - 0.1, 0.03), (0, 0, 0.12), GD)                          # tầng dưới để thùng dự trữ
+    for i in range(3):
+        box(P, (0.5, 0.36, 0.2), (-0.58 + i * 0.58, 0.05, 0.235), C['carton'], bev=0.006)
+    tilted = []
+    a = 0.27
+    for ci, kind in enumerate(kinds):
+        cx = -0.6 + ci * 0.6
+        Q = []
+        bz = 0.72                                                               # đáy sọt (trước khi nghiêng)
+        box(Q, (0.57, 0.92, 0.025), (cx, 0, bz), G)
+        for sy in (-1, 1):
+            box(Q, (0.57, 0.022, 0.14), (cx, sy * 0.45, bz + 0.07), G)
+        for sx in (-1, 1):
+            box(Q, (0.022, 0.92, 0.14), (cx + sx * 0.275, 0, bz + 0.07), G)
+        for k in range(2):                                                      # nẹp quanh thành sọt
+            z = bz + 0.04 + k * 0.06
+            for sy in (-1, 1):
+                box(Q, (0.58, 0.008, 0.016), (cx, sy * 0.463, z), GD)
+            for sx in (-1, 1):
+                box(Q, (0.008, 0.93, 0.016), (cx + sx * 0.288, 0, z), GD)
+        step, layers = KIEU_QUA[kind]
+        nx = int(0.5 / step)
+        ny = int(0.84 / step)
+        for l in range(layers):
+            off = step / 2 * l
+            for i in range(nx - l):
+                for j in range(ny - l):
+                    if l and rnd.random() < 0.35:
+                        continue
+                    x = cx - (nx - 1) * step / 2 + i * step + off + rnd.uniform(-0.008, 0.008)
+                    y = -(ny - 1) * step / 2 + j * step + off + rnd.uniform(-0.008, 0.008)
+                    qua(Q, kind, x, y, bz + 0.045 + l * step * 0.62, rnd)
+        nghieng(Q, (cx, -0.45, bz), a)
+        tilted += Q
+        # bảng giá cắm trước sọt
+        box(P, (0.008, 0.008, 0.16), (cx, -D / 2 + 0.03, 0.78), GD)
+        box(P, (0.17, 0.006, 0.1), (cx, -D / 2 + 0.024, 0.88), HM(0xf6f6f2))
+        box(P, (0.17, 0.007, 0.025), (cx, -D / 2 + 0.023, 0.92), HM(0xe0463c))
+    P += tilted
+    ten = ', '.join(TEN_QUA[k] for k in kinds)
+    return finish(P, name, f'Kệ rau quả ({ten})',
+                  f'1,8×1,1 m, cao ~1 m. Kệ gỗ nghiêng bày 3 sọt {ten}, tấm chắn xanh lá, bảng giá, thùng dự trữ ở tầng dưới.')
+
+def ke_rau_qua_1():
+    return ke_rau_qua('ke_rau_qua_1', ('tao', 'cam', 'chuoi'), 11)
+
+def ke_rau_qua_2():
+    return ke_rau_qua('ke_rau_qua_2', ('bap_cai', 'ca_chua', 'khoai'), 23)
+
+def ke_rau_qua_3():
+    return ke_rau_qua('ke_rau_qua_3', ('dua', 'tao', 'khoai'), 37)
+
+# Xe đẩy mua hàng (khách) và chồng giỏ nhựa
+def xe_mua_sam():
+    P = []
+    S = K['ke_xam']
+    R = K['nhan_hieu']
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            cyl(P, 0.045, 0.03, (sx * 0.2, sy * 0.36, 0.045), C['cao_su'], n=8, rot=(0, math.pi / 2, 0))
+            box(P, (0.03, 0.04, 0.06), (sx * 0.2, sy * 0.36, 0.1), S)
+    for sx in (-1, 1):
+        limb(P, (sx * 0.2, -0.36, 0.13), (sx * 0.2, 0.36, 0.13), 0.012, S, n=5)  # khung đáy
+        limb(P, (sx * 0.2, 0.36, 0.13), (sx * 0.23, 0.4, 0.95), 0.012, S, n=5)   # trụ sau
+    box(P, (0.4, 0.62, 0.012), (0, -0.02, 0.2), S)                               # giá dưới
+    # Giỏ lưới: viền trên/dưới + nan dọc
+    y0, y1, zb, zt = -0.44, 0.34, 0.46, 0.92
+    for (z, w) in ((zb, 0.42), (zt, 0.5), ((zb + zt) / 2, 0.46)):
+        for sx in (-1, 1):
+            box(P, (0.012, y1 - y0, 0.012), (sx * w / 2, (y0 + y1) / 2, z), S)
+        for y in (y0, y1):
+            box(P, (w, 0.012, 0.012), (0, y, z), S)
+    for k in range(8):
+        y = y0 + (k + 0.5) * (y1 - y0) / 8
+        for sx in (-1, 1):
+            limb(P, (sx * 0.21, y, zb), (sx * 0.25, y, zt), 0.004, S, n=3)
+    for k in range(5):
+        x = -0.2 + k * 0.1
+        for y in (y0, y1):
+            limb(P, (x * 0.84, y, zb), (x, y, zt), 0.004, S, n=3)
+    box(P, (0.4, y1 - y0, 0.01), (0, (y0 + y1) / 2, zb), S)                     # đáy giỏ
+    limb(P, (-0.25, 0.42, 0.98), (0.25, 0.42, 0.98), 0.02, R, n=6)              # tay đẩy đỏ
+    box(P, (0.14, 0.02, 0.08), (0, y0 - 0.005, 0.75), R)                         # biển nhỏ trước giỏ
+    return finish(P, 'xe_mua_sam', 'Xe đẩy mua hàng',
+                  '0,5×0,9 m, cao 1 m. Giỏ lưới thép, tay đẩy đỏ. Xếp lồng nhau ở bãi xe gần quầy.')
+
+def gio_hang():
+    P = []
+    R = HM(0xd8342b)
+    box(P, (0.48, 0.36, 0.06), (0, 0, 0.03), K['ke_chan'])                       # đế
+    for i in range(6):
+        z = 0.06 + i * 0.05
+        w, d, h, t = 0.42, 0.3, 0.2, 0.012
+        box(P, (w - 0.04, d - 0.04, t), (0, 0, z + t / 2), R)
+        for sy in (-1, 1):
+            box(P, (w, t, h), (0, sy * d / 2, z + h / 2), R)
+        for sx in (-1, 1):
+            box(P, (t, d, h), (sx * w / 2, 0, z + h / 2), R)
+    for sx in (-1, 1):                                                          # quai giỏ trên cùng
+        limb(P, (sx * 0.12, -0.15, 0.51), (sx * 0.12, 0.15, 0.51), 0.008, C['nhua_den'], n=4)
+    return finish(P, 'gio_hang', 'Chồng giỏ nhựa', '6 giỏ đỏ 42×30 cm lồng nhau, cao 0,52 m. Đặt cạnh quầy.')
 
 # 3b. Nhân viên bản ngố (để so sánh): lùn, đầu to, tay to, mắt chấm, thẻ đeo cổ to đung đưa
 def nhan_vien_ngo():
@@ -697,6 +1530,21 @@ def nhan_vien_ngo():
     cyl(P, 0.024, 0.15, (-0.34, -0.05, 0.6 - 0.09), C['nhua_den'], n=8)
     cyl(P, 0.026, 0.05, (-0.34, -0.05, 0.6 - 0.18), C['nhom'], n=8, r2=0.038)
     cyl(P, 0.034, 0.006, (-0.34, -0.05, 0.6 - 0.207), C['den_vang'], n=8)
+    bo('bang_phieu')                                                              # bảng kẹp phiếu việc (Tab), ẩn khi không xem
+    # Dựng sẵn ở tư thế nghỉ sao cho khi tay trái giơ lên (động tác xem_phieu: cánh tay -40°, cẳng tay -92° quanh X)
+    # bảng đứng nghiêng ~60° trước ngực, mặt giấy quay về phía mặt; bàn tay đỡ mép dưới.
+    phi = math.radians(162)                                                       # trục "lên" của bảng ở tư thế nghỉ
+    u = Vector((0, -math.sin(phi), math.cos(phi)))                                # hướng mép trên tờ phiếu
+    nv = Vector((0, math.cos(phi), math.sin(phi)))                                # pháp tuyến mặt giấy
+    H = Vector((0.33, -0.05, 0.62))                                               # lòng bàn tay trái
+    at = lambda du, dn, dx=0.0: tuple(H + u * du + nv * dn + Vector((dx, 0, 0)))
+    rot = (phi, 0, 0)
+    box(P, (0.27, 0.014, 0.36), at(0.14, 0.03), C['go'], rot=rot, bev=0.004)        # tấm bìa cứng nâu
+    box(P, (0.235, 0.004, 0.3), at(0.13, 0.039), C['giay'], rot=rot)               # tờ phiếu
+    for i in range(6):                                                            # dòng chữ
+        box(P, (0.16 - 0.04 * (i % 2), 0.003, 0.01), at(0.04 + i * 0.038, 0.042, -0.02 * (i % 2)), C['nhua_xam'], rot=rot)
+    box(P, (0.045, 0.003, 0.024), at(0.24, 0.042, 0.06), C['thuong_hieu'], rot=rot)  # dấu đỏ
+    box(P, (0.12, 0.024, 0.036), at(0.3, 0.04), C['thep'], rot=rot, bev=0.005)       # kẹp sắt ở mép trên
     bo('thung')                                                                   # thùng chỉ hiện khi "đóng thùng"
     box(P, (0.8, 0.8, 0.9), (0, 0.2, 0.45), C['carton'], bev=0.015)
     box(P, (0.14, 0.82, 0.008), (0, 0.2, 0.902), C['bang_keo'])
@@ -715,8 +1563,11 @@ def den_pin():
     return finish(P, 'den_pin', 'Đèn pin', 'Dài 18 cm. Mỗi người một cái, dùng khi siêu thị mất điện.')
 
 builders = [ke_hang, nguoi_kiem_ke, nhan_vien, nhan_vien_ngo, thung_carton, tu_mat, ke_mat, tu_dong, quay_thu_ngan,
-            bang_dong_lanh, may_cham_cong, the_nhan_vien, may_quet, den_pin, xe_day, lon_nuoc, hop_banh, chai_nuoc,
-            goi_mi, hop_sua, kem_hop, goi_dong, sua_chua]
+            bang_dong_lanh, may_cham_cong, the_nhan_vien, may_quet, den_pin, xe_day, kien_nuoc,
+            tu_dien, thung_rac, tui_rac, xe_rac, thung_rac_lon,
+            lon_nuoc, lon_xanh, lon_cam, ca_phe_lon, tra_xanh, snack_rong_bien, snack_cay, goi_mi_ga, banh_dua, lau_san, chai_nuoc, chai_ngot, hop_banh, ngu_coc, socola, goi_mi, hop_sua, snack, do_hop,
+            nuoc_tay, nuoc_giat, dau_an, kem_hop, goi_dong, pizza, sua_chua, sua_tuoi, nuoc_cam,
+            ke_rau_qua_1, ke_rau_qua_2, ke_rau_qua_3, xe_mua_sam, gio_hang]
 for b in builders:
     b()
 
@@ -833,35 +1684,45 @@ def leg_comp(a, b, Lt, Ls):
     nz = -Lt * math.cos(a) - Ls * math.cos(ab)
     return (0.0, -ny, -(Lt + Ls) - nz)
 
-# ---------- Người Kiểm Kê: chậm, đều, cứng, không bao giờ chạy
+def chan_cham_dat(d):
+    """Hạ người vừa đủ để chân duỗi dài hơn chạm đúng mặt sàn (không lơ lửng, không cắm xuống sàn)."""
+    ext = []
+    for sd in ('L', 'R'):
+        a = math.radians(d.get('dui.' + sd, (0, 0, 0))[0])
+        b = math.radians(d.get('cang.' + sd, (0, 0, 0))[0])
+        ext.append(KK_LT * math.cos(a) + KK_LS * math.cos(a + b))
+    return max(ext) - (KK_LT + KK_LS)
+
+# ---------- Người Kiểm Kê: dáng Slender Man — thẳng lưng, sải dài, đều đặn, tay buông gần như bất động
 def kk_di(t, T):
     p = 2 * math.pi * t / T
     s = math.sin(p)
     d = {}
-    legs_walk(d, p, 17, 26)
-    d['hong'] = (0, 3 * s, 4 * s)
-    d['than'] = (4, 0, -3 * s)
-    d['tay_tren.R'] = (-5 * s, 0, 0)
-    d['tay_duoi.R'] = (-2 - 3 * math.sin(p - 0.5), 0, 0)
-    d['tay_tren.L'] = (1.5 * math.sin(2 * p), 0, 0)
-    tick = 7 * pulse(t / T, 0.62, 0.025)      # đầu giật nhẹ một nhịp mỗi chu kỳ
-    d['dau'] = (0, 0, 2 * s + tick)
-    d['_loc'] = (0, 0, -0.022 * s * s)
+    legs_walk(d, p, 24, 34, base_knee=3)
+    d['hong'] = (0, 0, 2.5 * s)                    # chỉ xoay nhẹ theo bước, không nghiêng
+    d['than'] = (3, 0, -2.0 * s)                   # thẳng lưng, hơi đổ tới, xoay ngược hông
+    d['co'] = (2, 0, 0)
+    d['dau'] = (-2, 0, -0.5 * s)                   # đầu giữ yên nhìn thẳng
+    d['tay_tren.R'] = (-4 * math.sin(p - 0.5), 0, 0)   # tay dài đung đưa chậm, trễ nhịp như con lắc
+    d['tay_duoi.R'] = (-2 - 2.5 * math.sin(p - 1.0), 0, 0)
+    d['tay_tren.L'] = (0.6 * math.sin(2 * p), 0, 0)    # tay cầm máy quét giữ yên
+    d['_loc'] = (0, 0, chan_cham_dat(d))
     return d
 
 def kk_chay(t, T):
-    """Chạy cứng đơ: sải dài, tay cầm máy quét khoá cứng phía trước, tay kia bị kéo lê ra sau."""
+    """Chạy: đổ người tới, sải rất dài, tay cầm máy quét khoá cứng phía trước, tay dài kéo lê phía sau."""
     p = 2 * math.pi * t / T
     s = math.sin(p)
     d = {}
-    legs_walk(d, p, 34, 70, base_knee=8)
-    d['hong'] = (0, 2 * s, 3 * s)
-    d['than'] = (12, 0, -2 * s)
-    d['dau'] = (-10, 0, 0)                     # đầu khoá cứng, nhìn thẳng
-    d['tay_tren.L'] = (-8, 0, 0)
-    d['tay_tren.R'] = (18 + 3 * s, 0, 0)
+    legs_walk(d, p, 36, 78, base_knee=8)
+    d['hong'] = (0, 0, 4 * s)
+    d['than'] = (14, 0, -3 * s)
+    d['co'] = (-4, 0, 0)
+    d['dau'] = (-10, 0, 0)                         # đầu khoá cứng, nhìn thẳng
+    d['tay_tren.L'] = (-10, 0, 0)
+    d['tay_tren.R'] = (22 + 4 * math.sin(p - 0.6), 0, 0)
     d['tay_duoi.R'] = (6, 0, 0)
-    d['_loc'] = (0, 0, -0.04 * s * s)
+    d['_loc'] = (0, 0, chan_cham_dat(d))
     return d
 
 def kk_dung(t, T):
@@ -1038,9 +1899,52 @@ metas = {m['file'][:-4]: m for _, m in MODELS}
 # ---------- Người Kiểm Kê: cảnh bắt người
 KK_LT = KK['hip'] - KK['knee']
 KK_LS = KK['knee'] - 0.06
-# Tư thế vác thùng trên vai phải: cánh tay giơ ngang ra ngoài, cẳng tay dựng đứng giữ cạnh thùng.
-# Trong game thùng đặt ở (-0,42; 1,74; 0) so với gốc model (xem captureView.ts, SHOULDER_BOX).
-VAI = {'tay_tren.R': (0, 85, 0), 'tay_duoi.R': (0, 95, 0), 'dau': (0, 12, 0), 'than': (0, 5, 0)}
+# Tư thế vác thùng trên vai phải (tính bằng IK, không đoán góc):
+#   thùng ngồi trên vai phải, mép trong ngay trên khớp vai; cánh tay vòng ra trước ngực, cẳng tay nằm ngang
+#   ôm mặt trước thùng, bàn tay và ngón dài bám vào góc ngoài. Tay KHÔNG xuyên thùng (kiểm tra số bên dưới).
+# Trong game thùng đặt ở (-0,50; 1,745; 0) so với gốc model rồi gắn vào xương thân (captureView.ts, SHOULDER_BOX).
+THUNG_VAI = dict(cx=-0.50, cy=0.0, z0=1.745, w=0.58, d=0.58, h=0.5)
+VAI_THAN = (0, 5, 0)
+
+def ik_tay(sd, E, W, than=(0, 0, 0)):
+    """Góc (độ, trục thế giới, kiểu make_clips) cho tay_tren/tay_duoi để khuỷu tới E, cổ tay tới W."""
+    sx = 1 if sd == 'L' else -1
+    S = Vector((sx * KK['sh'], 0, KK['sh_z']))
+    E0 = Vector(KK['elbow_' + sd])
+    W0 = Vector(KK['wrist_' + sd])
+    piv = Vector((0, 0, KK['hip'] + 0.1))
+    Rp = Euler(tuple(math.radians(a) for a in than), 'XYZ').to_matrix()
+    S1 = piv + Rp @ (S - piv)
+    u = (Vector(E) - S1).normalized()
+    Ru = (E0 - S).normalized().rotation_difference(Rp.inverted() @ u).to_matrix()
+    E1 = S1 + Rp @ Ru @ (E0 - S)
+    f = (Vector(W) - E1).normalized()
+    Rf = (W0 - E0).normalized().rotation_difference((Rp @ Ru).inverted() @ f).to_matrix()
+    deg = lambda R: tuple(round(math.degrees(a), 2) for a in R.to_euler('XYZ'))
+    W1 = E1 + Rp @ Ru @ Rf @ (W0 - E0)
+    return {'tay_tren.' + sd: deg(Ru), 'tay_duoi.' + sd: deg(Rf)}, (S1, E1, W1, Rp @ Ru @ Rf @ (W0 - E0).normalized())
+
+_E = (-0.04, -0.37, 1.93)
+_W = tuple(Vector(_E) + Vector((-0.97, 0.0, 0.16)).normalized() * 0.46)
+_tay, (_S, _E1, _W1, _dir) = ik_tay('R', _E, _W, VAI_THAN)
+VAI = dict(_tay, dau=(0, 12, 0), than=VAI_THAN)
+
+def _kiem_tra_vai():
+    """In khoảng hở nhỏ nhất giữa tay (bán kính ~4,5 cm) và thùng; âm = xuyên."""
+    b = THUNG_VAI
+    lo = Vector((b['cx'] - b['w'] / 2, b['cy'] - b['d'] / 2, b['z0']))
+    hi = Vector((b['cx'] + b['w'] / 2, b['cy'] + b['d'] / 2, b['z0'] + b['h']))
+    def dist(p):
+        q = Vector((min(max(p.x, lo.x), hi.x), min(max(p.y, lo.y), hi.y), min(max(p.z, lo.z), hi.z)))
+        inside = all(lo[i] < p[i] < hi[i] for i in range(3))
+        return -min(min(p[i] - lo[i], hi[i] - p[i]) for i in range(3)) if inside else (p - q).length
+    tip = _W1 + _dir * 0.37
+    worst = []
+    for name, a, c, r in (('canh_tay', _S, _E1, 0.045), ('cang_tay', _E1, _W1, 0.04), ('ban_tay_ngon', _W1, tip, 0.025)):
+        m = min(dist(a.lerp(c, k / 20)) - r for k in range(1, 21))
+        worst.append((name, round(m, 3)))
+    print('VAI', VAI, 'khuyu', tuple(round(v, 3) for v in _E1), 'co_tay', tuple(round(v, 3) for v in _W1), 'ho', worst)
+_kiem_tra_vai()
 
 def mix(a, b, k):
     """Trộn hai tư thế (dict góc) theo k (0 = a, 1 = b)."""
@@ -1101,18 +2005,19 @@ def kk_bat(t, T):
     return mix(d, VAI, lift) | ({'_loc': tuple(v * (1 - lift) for v in d['_loc'])})
 
 def kk_vac_hop(t, T):
-    """Đi vác thùng trên vai phải: bước nặng, người nghiêng sang trái, thùng nhún theo bước."""
+    """Đi vác thùng trên vai phải: vẫn thẳng lưng, bước đều; tay phải giữ chặt thùng (không đổi góc so với thân).
+    Trong game thùng gắn vào xương 'than' nên nhún, lắc đúng theo người."""
     p = 2 * math.pi * t / T
     s = math.sin(p)
     d = {}
-    legs_walk(d, p, 18, 30)
+    legs_walk(d, p, 24, 34, base_knee=3)
     d.update(VAI)
-    d['hong'] = (0, 4 * s, 4 * s)
-    d['than'] = (5, 5 + 2 * s, -3 * s)
-    d['dau'] = (2, 12, 2 * s)
-    d['tay_tren.L'] = (2 * math.sin(2 * p), 0, 0)
-    d['tay_duoi.R'] = (0, 95 + 3 * math.sin(2 * p), 0)
-    d['_loc'] = (0, 0, -0.03 * s * s)
+    d['hong'] = (0, 0, 2.5 * s)
+    d['than'] = (4, 5, -1.5 * s)
+    d['co'] = (2, 0, 0)
+    d['dau'] = (0, 12, 0)
+    d['tay_tren.L'] = (0.6 * math.sin(2 * p), 0, 0)
+    d['_loc'] = (0, 0, chan_cham_dat(d))
     return d
 
 def kk_dat_hop(t, T):
@@ -1133,7 +2038,7 @@ arm = make_rig(objs['nguoi_kiem_ke'], 'nguoi_kiem_ke', bones_human(
     wrists={'L': KK['wrist_L'], 'R': KK['wrist_R']},
     knees={'L': (0.102, 0, KK['knee']), 'R': (-0.102, 0, KK['knee'])},
     ankles={'L': (0.1, 0, 0.06), 'R': (-0.1, 0, 0.06)}, hips_x=0.1))
-KK_CLIPS = [('di', 1.8, kk_di, 'Đi tuần (chậm, đều)', True),
+KK_CLIPS = [('di', 1.6, kk_di, 'Đi tuần (chậm, đều)', True),
             ('chay', 0.8, kk_chay, 'Chạy (khi mất điện, nghe tiếng động)', True),
             ('dung_im', 4.0, kk_dung, 'Đứng im', True),
             ('quet', 3.2, kk_quet, 'Quét qua lại', True),
@@ -1141,7 +2046,7 @@ KK_CLIPS = [('di', 1.8, kk_di, 'Đi tuần (chậm, đều)', True),
             ('dem', 2.8, kk_dem, 'Đếm "Một… Hai…"', True),
             ('lao_toi', 0.55, kk_lao_toi, 'Lao tới chộp người (đếm xong)', True),
             ('bat', 3.0, kk_bat, 'Bắt và đóng thùng: úp thùng, ấn bẹp, dán băng keo, quét mã, nhấc lên vai', False),
-            ('vac_hop', 1.9, kk_vac_hop, 'Vác thùng trên vai về kho', True),
+            ('vac_hop', 1.6, kk_vac_hop, 'Vác thùng trên vai về kho', True),
             ('dat_hop', 1.0, kk_dat_hop, 'Đặt thùng xuống ô trong kho', False)]
 make_clips(arm, 'nguoi_kiem_ke', [(c[0], c[1], c[2]) for c in KK_CLIPS])
 metas['nguoi_kiem_ke']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in KK_CLIPS]
@@ -1262,6 +2167,49 @@ def ngo_cui_chao(t, T):
         'day_the': (-50 * b + 6 * math.sin(t * 14) * b, 0, 0),         # thẻ rủ thẳng xuống
     }
 
+def cam_phieu(d, t, T, walking):
+    """Tay trái giơ bảng kẹp phiếu việc trước ngực (bảng nằm dọc cẳng tay), đầu cúi nhìn, tay phải lật trang / chỉ dòng.
+    Người khác nhìn vào là biết người này đang xem phiếu việc (bấm Tab)."""
+    p = 2 * math.pi * t / T
+    s = math.sin(p)
+    flip = 0.0 if walking else pulse(t, T * 0.62, 0.14)           # thỉnh thoảng lật trang
+    d['tay_tren.L'] = (-40 + (2 * math.sin(2 * p) if walking else 0), 0, -30)
+    d['tay_duoi.L'] = (-84, 0, 0)
+    d['tay_tren.R'] = (-30 - 14 * flip, 0, 26 + 10 * flip)
+    d['tay_duoi.R'] = (-62 - 20 * flip + (0 if walking else 6 * math.sin(3 * p)), 0, 0)   # ngón tay dò từng dòng
+    old = d.get('dau', (0, 0, 0))
+    d['dau'] = (26 + 3 * math.sin(p * 2), old[1] * 0.4, -6 + 4 * s)
+    th = d.get('than', (0, 0, 0))
+    d['than'] = (th[0] + 5, th[1], th[2] * 0.5)
+    d['day_the'] = (d.get('day_the', (0, 0, 0))[0] * 0.5 - 8, 0, 0)
+    d['%bang_phieu'] = 1.0
+    return d
+
+def ngo_xem_phieu(t, T):
+    return cam_phieu(ngo_dung(t, T), t, T, False)
+
+def ngo_di_xem_phieu(t, T):
+    return cam_phieu(ngo_lach_bach(t, T, 20, 38, 0, 0.035), t, T, True)
+
+def ngo_khieng(t, T, lui=False):
+    """Khiêng kiện hàng nặng cùng người khác: đi chậm, gối chùng, ngả người ra sau.
+    lui=False: người đi sau, hai tay nắm quai đai phía trước bụng. lui=True: người đi trước, tay vòng ra sau nắm quai."""
+    d = ngo_lach_bach(t, T, 16, 30, 0, 0.03, lean=-3)
+    p = 2 * math.pi * t / T
+    j = 2 * math.sin(2 * p)
+    if lui:
+        for sd, out in (('L', -8), ('R', 8)):
+            d['tay_tren.' + sd] = (28 + j, out, 0)
+            d['tay_duoi.' + sd] = (-12, 0, 0)
+        d['than'] = (8, d['than'][1], d['than'][2] * 0.5)
+    else:
+        for sd, out in (('L', 10), ('R', -10)):
+            d['tay_tren.' + sd] = (-30 + j, out, 0)
+            d['tay_duoi.' + sd] = (-28, 0, 0)
+        d['than'] = (-8, d['than'][1], d['than'][2] * 0.5)
+    d['dau'] = (d['dau'][0] - 4, d['dau'][1], d['dau'][2])
+    return d
+
 def ngo_dong_thung(t, T):
     st = seg(t, 0.0, 0.12) * (1 - seg(t, 0.5, 0.6))    # giãy, ngó lên thấy thùng rơi
     sh = math.sin(t * 32)
@@ -1299,9 +2247,10 @@ B_NGO = bones_human(
 B_NGO += [('day_the', (0, -0.2, 1.12), (0, -0.24, 0.86), 'than'),
           ('thung', (0, 0.2, 0), (0, 0.2, 0.3), None),
           ('may_quet_tay', (0.34, -0.05, 0.6), (0.34, -0.05, 0.4), 'tay_duoi.L'),
-          ('den_pin_tay', (-0.34, -0.05, 0.6), (-0.34, -0.05, 0.4), 'tay_duoi.R')]
+          ('den_pin_tay', (-0.34, -0.05, 0.6), (-0.34, -0.05, 0.4), 'tay_duoi.R'),
+          ('bang_phieu', (0.34, -0.06, 0.69), (0.34, -0.06, 0.45), 'tay_duoi.L')]
 arm = make_rig(objs['nhan_vien_ngo'], 'nhan_vien_ngo', B_NGO)
-REST_SCALE[arm.name] = {'thung': 0.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0}
+REST_SCALE[arm.name] = {'thung': 0.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0, 'bang_phieu': 0.0}
 NGO_CLIPS = [('dung', 2.6, ngo_dung, 'Đứng (đung đưa)', True),
              ('di', 0.9, ngo_di, 'Đi lạch bạch', True),
              ('chay', 0.5, ngo_chay, 'Chạy giơ tay la hét', True),
@@ -1312,9 +2261,13 @@ NGO_CLIPS = [('dung', 2.6, ngo_dung, 'Đứng (đung đưa)', True),
              ('vay_tay', 1.6, ngo_vay_tay, 'Vẫy tay', True),
              ('chi_tay', 1.2, ngo_chi_tay, 'Chỉ tay "Ở ĐÓ!"', True),
              ('cui_chao', 2.0, ngo_cui_chao, 'Cúi chào "Dạ thưa sếp"', True),
+             ('xem_phieu', 3.0, ngo_xem_phieu, 'Xem phiếu việc (Tab): giơ bảng kẹp, cúi nhìn', True),
+             ('di_xem_phieu', 0.9, ngo_di_xem_phieu, 'Vừa đi vừa xem phiếu việc', True),
+             ('khieng', 1.3, ngo_khieng, 'Khiêng kiện hàng (người đi sau)', True),
+             ('khieng_lui', 1.3, lambda t, T: ngo_khieng(t, T, True), 'Khiêng kiện hàng (người đi trước)', True),
              ('dong_thung', 2.6, ngo_dong_thung, 'Bị "đóng thùng"', False)]
 make_clips(arm, 'nhan_vien_ngo', [(c[0], c[1], c[2]) for c in NGO_CLIPS],
-           loc_bones=('goc', 'thung'), scales={'thung': 0.0, 'than': 1.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0})
+           loc_bones=('goc', 'thung'), scales={'thung': 0.0, 'than': 1.0, 'may_quet_tay': 0.0, 'den_pin_tay': 0.0, 'bang_phieu': 0.0})
 metas['nhan_vien_ngo']['chuyen_dong'] = [dict(ten=c[0], nhan=c[3], lap=c[4]) for c in NGO_CLIPS]
 
 # ---------------------------------------------------------------- xuất .glb
@@ -1323,6 +2276,9 @@ for o, meta in MODELS:
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
     rig = RIGS.get(o.name)
+    if not rig:
+        gop_mau(o)
+        meta['lenh_ve'] = len(o.data.materials)
     if rig:
         rig.select_set(True)
         bpy.context.view_layer.objects.active = rig
@@ -1477,6 +2433,7 @@ if RENDER:
         'nhan_vien': (0.2, -0.5, 0), 'nhan_vien_ngo': (0.85, -0.45, 0),'quay_thu_ngan': (2.6, 0.5, 0), 'thung_carton': (1.2, -0.9, 0),
         'xe_day': (-1.2, -1.2, 0), 'bang_dong_lanh': (-2.7, -1.1, 0), 'may_cham_cong': (-2.0, -1.4, 0),
         'the_nhan_vien': (0.75, -1.5, 0), 'may_quet': (0.45, -1.5, 0), 'den_pin': (0.25, -1.6, 0),
+        'ke_rau_qua_1': (5.9, 0.2, 0), 'xe_mua_sam': (4.7, -1.3, 0), 'gio_hang': (3.5, -1.3, 0),
     }
     for k, loc in place.items():
         RIGS.get(k, get[k]).location = loc
@@ -1486,7 +2443,8 @@ if RENDER:
     # bày hàng lên kệ và tủ mát (chỉ để xem, không xuất)
     goods = [get[k] for k in ('hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua')]
     cold = {k: get[k] for k in ('hh_kem', 'hh_goi_dong', 'hh_sua_chua')}
-    for g in goods + list(cold.values()):
+    an_di = [o for o in allm if o.name.startswith('hh_') or o.name in ('ke_rau_qua_2', 'ke_rau_qua_3')]
+    for g in an_di:
         g.hide_render = True
 
     def put(src, loc, rotz=0.0):
@@ -1538,12 +2496,15 @@ if RENDER:
         render_to(os.path.join(OUT_PREV, 'tu_lanh_co_hang.png'))
     for x in allm:
         x.hide_render = False
-    for g in goods + list(cold.values()):
+    for g in an_di:
         g.hide_render = True
     kx, ky, _ = place['ke_hang']
-    for li, z in enumerate((0.175, 0.615, 1.055, 1.495)):
-        src = goods[li % len(goods) if li < 3 else 4]
-        step = {'hh_hop_banh': 0.17, 'hh_goi_mi': 0.16}.get(src.name, 0.085)
+    def rong(o):
+        bpy.context.view_layer.update()
+        return max(v.co.x for v in o.data.vertices) - min(v.co.x for v in o.data.vertices)
+    for li, z in enumerate((0.175, 0.615, 1.055, 1.495, 1.935)):
+        src = get[('hh_lon_nuoc', 'hh_snack', 'hh_ngu_coc', 'hh_nuoc_giat', 'hh_chai_ngot')[li]]
+        step = rong(src) + 0.015
         n = int(1.16 / step)
         for i in range(n):
             if (li * 7 + i) % 9 == 4:
@@ -1556,6 +2517,31 @@ if RENDER:
     cam.data.lens = 40
     frame(cam, [get[k] for k in place], direction=(0.3, -1.6, 0.9), pad=0.8)
     render_to(os.path.join(OUT_PREV, 'tong_quan.png'))
+
+    # Ảnh riêng: toàn bộ hàng hoá xếp hàng; khu rau quả + xe đẩy + giỏ
+    for x in scene.objects:
+        if x.type == 'MESH' and x.name != 'san':
+            x.hide_render = True
+    hh = [o for o in allm if o.name.startswith('hh_')]
+    for i, o in enumerate(hh):
+        o.hide_render = False
+        o.location = ((i % 7) * 0.32, (i // 7) * 0.36, 0)
+        o.rotation_euler = (0, 0, 0)
+    scene.render.resolution_x, scene.render.resolution_y = 1400, 900
+    frame(cam, hh, direction=(0.0, -1.6, 1.0), pad=0.72)
+    render_to(os.path.join(OUT_PREV, 'hang_hoa.png'))
+    for o in hh:
+        o.hide_render = True
+    rq = [get[k] for k in ('ke_rau_qua_1', 'ke_rau_qua_2', 'ke_rau_qua_3', 'xe_mua_sam', 'gio_hang')]
+    for i, o in enumerate(rq[:3]):
+        o.location = (i * 2.0, 0, 0)
+        o.rotation_euler = (0, 0, 0)
+    rq[3].location = (6.2, -0.2, 0)
+    rq[4].location = (6.2, 0.9, 0)
+    for o in rq:
+        o.hide_render = False
+    frame(cam, rq, direction=(0.2, -1.6, 1.1), pad=0.62)
+    render_to(os.path.join(OUT_PREV, 'rau_qua.png'))
 
 bpy.ops.wm.save_as_mainfile(filepath=OUT_BLEND)
 print('XONG', len(MODELS), 'model')
