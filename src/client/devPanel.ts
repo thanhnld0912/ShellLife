@@ -1,12 +1,12 @@
 // Bảng sự kiện (phím P): tự điều khiển sự kiện và chỉnh thông số khi chơi thử.
 // - "Ngay bây giờ": mất điện, gọi / cho nghỉ / dụ Người Kiểm Kê, phát loa.
 // - Thời gian: tua giờ, tốc độ thời gian, nhảy đêm.
-// - Gian lận để thử: tàng hình, không chết, cộng công, đặt số lỗ thẻ.
+// - Gian lận để thử: tàng hình, không chết, xong việc được giao, ghi hồ sơ, đặt số lỗ thẻ.
 // - Lịch sự kiện + thông số Người Kiểm Kê + người chơi: lưu trong trình duyệt, áp dụng cho các ca sau.
 // - Nhật ký: mọi sự kiện trong ca kèm giờ trong game, để ghi nhận xét chơi thử.
 
 import { ROUTE_NAMES, type AuditorTuning } from '../sim/auditor.ts';
-import { DEFAULT_EVENTS, LATE_IN_PENALTY, MAX_NIGHTS, type EventConfig, type Game } from '../sim/game.ts';
+import { DEFAULT_EVENTS, MAX_NIGHTS, type EventConfig, type Game } from '../sim/game.ts';
 import { REAL_PER_MIN, SHIFT_MINUTES, clockOf, type OrderKind } from '../sim/shift.ts';
 import type { World } from '../render/world.ts';
 import type { PlayerController } from './player.ts';
@@ -201,7 +201,7 @@ export class DevPanel {
         <span>Đêm ${g.night}/${MAX_NIGHTS} · ${g.shift.clock()}</span>
         <span>Kiểm kê viên: <b>${a.state}</b> · lộ trình: ${ROUTE_NAMES[a.routeStyle]}</span>
         <span>Điện: <b class="${g.power ? '' : 'bad'}">${g.power ? 'có' : 'MẤT'}</b></span>
-        <span>Công ${g.shift.cong}/${g.shift.quota}</span>
+        <span>Việc ${g.shift.jobsDone}/${g.shift.jobs.length} · hồ sơ ${g.records}/3</span>
         <span>Phiếu mở: ${g.shift.openOrders.length} · trễ ${g.shift.lateCount}</span>
         <span>Sổ lệch: <b class="${g.shift.drift > 0.45 ? 'bad' : ''}">${Math.round(g.shift.drift * 100)}%</b></span>
       </div>
@@ -233,9 +233,11 @@ export class DevPanel {
       <section><h3>Gian lận để thử</h3>
         <label class="ck"><input type="checkbox" data-flag="invisible" ${g.dev.invisible ? 'checked' : ''}> Tàng hình (Người Kiểm Kê không thấy bạn)</label>
         <label class="ck"><input type="checkbox" data-flag="noDeath" ${g.dev.noDeath ? 'checked' : ''}> Không chết (bị đếm đủ vẫn được tha)</label>
+        <label class="ck"><input type="checkbox" data-flag="helper" ${g.dev.helper ? 'checked' : ''}> Đồng nghiệp ảo đi theo (thử chơi 2 người: bắt chước bấm Tab xem phiếu, phụ khiêng kiện hàng)</label>
         <div class="btns">
-          <button data-act="cong" data-n="2">+2 công</button>
-          <button data-act="quota">Đủ chỉ tiêu</button>
+          <button data-act="jobs" data-n="1">Xong 1 việc được giao</button>
+          <button data-act="jobs" data-n="-1">Xong hết việc được giao</button>
+          <button data-act="record">+1 ghi hồ sơ</button>
         </div>
         <div class="row"><span class="lbl">Số lỗ trên thẻ</span><div class="seg">${holeBtns}</div></div>
       </section>
@@ -247,7 +249,7 @@ export class DevPanel {
         <label class="ck"><input type="checkbox" data-ev="clockInRequired" ${ev.clockInRequired ? 'checked' : ''}> Phải chấm công vào ca mới được làm việc</label>
         <label class="sl${s.events.clockInBy !== undefined ? ' ch' : ''}"><span>Hạn chấm công vào ca</span>
           <input type="range" data-ev="clockInBy" min="5" max="90" step="5" value="${ev.clockInBy}">
-          <b>${clockOf(ev.clockInBy)} · trễ trừ ${LATE_IN_PENALTY} công</b></label>
+          <b>${clockOf(ev.clockInBy)} · trễ bị ghi hồ sơ</b></label>
         <label class="ck"><input type="checkbox" data-ev="blackoutAuto" ${ev.blackoutAuto ? 'checked' : ''}> Tự mất điện (đêm đầu 1 lần, mỗi đêm sau thêm 1 lần)</label>
         <label class="sl${s.events.blackoutMax !== undefined ? ' ch' : ''}"><span>Tối đa mỗi đêm</span>
           <input type="range" data-ev="blackoutMax" min="1" max="5" step="1" value="${ev.blackoutMax}">
@@ -267,6 +269,8 @@ export class DevPanel {
           <button data-act="order" data-kind="rescan">Giao: kiểm lại kệ</button>
           <button data-act="order" data-kind="coldRestock">Giao: tủ lạnh hết hàng</button>
           <button data-act="order" data-kind="deliver">Giao: đơn gấp</button>
+          <button data-act="order" data-kind="bulky">Giao: khiêng kiện nước (2 người)</button>
+          <button data-act="power">Mất điện ngay (thử sửa điện)</button>
         </div>
         <div class="row"><span class="lbl">Đặt độ lệch sổ</span><div class="seg">
           ${[0, 0.3, 0.6, 1].map((v) => `<button data-act="drift" data-n="${v}">${v * 100}%</button>`).join('')}
@@ -280,7 +284,8 @@ export class DevPanel {
         <label class="sl${s.events.orderTimeMul !== undefined ? ' ch' : ''}"><span>Hạn phiếu (nhân)</span>
           <input type="range" data-ev="orderTimeMul" min="0.4" max="2" step="0.1" value="${ev.orderTimeMul}">
           <b>${ev.orderTimeMul}×</b></label>
-        <label class="ck"><input type="checkbox" data-ev="latePenalty" ${ev.latePenalty ? 'checked' : ''}> Trễ hạn phiếu việc bị bấm 1 lỗ lúc 06:00</label>
+        <label class="ck"><input type="checkbox" data-ev="latePenalty" ${ev.latePenalty ? 'checked' : ''}> Phiếu phát sinh trễ hạn bị ghi hồ sơ (3 lần = 1 lỗ)</label>
+        <label class="ck"><input type="checkbox" data-ev="powerFix" ${ev.powerFix ? 'checked' : ''}> Mất điện phải tự sửa ở PHÒNG ĐIỆN (tắt: tự có điện lại)</label>
         <p class="dim">Đêm ${g.night}: ${Math.round(ev.ordersBase + ev.ordersPerNight * g.night)} phiếu (đổi số phiếu có hiệu lực từ đêm sau). Sổ lệch làm đèn khu bán hàng tắt dần, Người Kiểm Kê nghe xa hơn, quét xa hơn, đi tuần nhanh hơn.</p>
       </section>
 
@@ -331,8 +336,8 @@ export class DevPanel {
       case 'freezer': g.devSkipToFreezer(); break;
       case 'speed': this.host.timeScale = n; break;
       case 'night': g.devGoNight(n); break;
-      case 'cong': g.devAddCong(n); break;
-      case 'quota': g.devAddCong(Math.max(0, g.shift.quota - g.shift.cong)); break;
+      case 'jobs': g.devCompleteJobs(n); break;
+      case 'record': g.devRecord(); break;
       case 'holes': g.devSetHoles(n); break;
       case 'order': g.devOrder(btn.dataset.kind as OrderKind); break;
       case 'drift': g.devSetDrift(n); break;
@@ -351,7 +356,7 @@ export class DevPanel {
     const out = t.parentElement?.querySelector('b');
     if (d.opt === 'pauseOnOpen') {
       this.saved.pauseOnOpen = t.checked;
-    } else if (d.flag === 'invisible' || d.flag === 'noDeath') {
+    } else if (d.flag === 'invisible' || d.flag === 'noDeath' || d.flag === 'helper') {
       g.dev[d.flag] = t.checked;
     } else if (d.ev) {
       const k = d.ev as keyof EventConfig;

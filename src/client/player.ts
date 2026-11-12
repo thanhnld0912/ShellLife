@@ -1,9 +1,9 @@
-// Điều khiển người chơi góc nhìn thứ nhất: di chuyển, va chạm, tiếng bước chân, ôm thùng.
+// Điều khiển người chơi góc nhìn thứ nhất: di chuyển, va chạm, tiếng bước chân, ôm thùng, đi rón rén (giữ C).
 
 import * as THREE from 'three';
-import type { V2 } from '../sim/geometry.ts';
+import type { AABB, V2 } from '../sim/geometry.ts';
 import { pushOutCircle } from '../sim/geometry.ts';
-import { SOLIDS } from '../sim/layout.ts';
+import { PLAYER_SOLIDS as SOLIDS } from '../sim/layout.ts';
 
 const EYE = 1.6;
 const RADIUS = 0.3;
@@ -16,6 +16,9 @@ export class PlayerController {
   keys = new Set<string>();
   /** Tốc độ (m/s). Chỉnh được trong bảng sự kiện. Ôm thùng chạy phải thua Người Kiểm Kê chạy (3,4+). */
   speeds = { walk: 2.2, run: 3.8, carryWalk: 1.8, carryRun: 2.7 };
+  /** Đi rón rén (giữ C): tốc độ nhân hệ số này, hạ thấp người, không gây tiếng lạch cạch khi ôm thùng. */
+  sneakMul = 0.55;
+  private eye = EYE;
   /** Độ sáng đèn pin khi bật. */
   flashPower = 30;
   /** Gọi khi người chơi gây tiếng động: (vị trí, bán kính nghe, sai số). */
@@ -104,7 +107,14 @@ export class PlayerController {
     this.coldBox.visible = this.carryKind === 'cold';
   }
 
-  update(dt: number): { moving: boolean; running: boolean } {
+  /**
+   * canRun: còn thể lực để chạy · speedMul: hệ số tốc độ (đau bụng thì chậm) · maxSpeed: trần tốc độ (đang khiêng kiện hàng)
+   * bodies: các vòng va chạm phía trước mặt (kiện hàng đang khiêng: [khoảng cách, bán kính]) · extra: vật cản tạm (kiện nằm trên sàn).
+   */
+  update(
+    dt: number,
+    opts: { canRun?: boolean; speedMul?: number; maxSpeed?: number | null; bodies?: [number, number][]; extra?: AABB[] } = {},
+  ): { moving: boolean; running: boolean; sneaking: boolean } {
     const f = new THREE.Vector3();
     this.camera.getWorldDirection(f);
     f.y = 0;
@@ -120,22 +130,40 @@ export class PlayerController {
     if (k.has('KeyA') || k.has('ArrowLeft')) { mx -= rx; mz -= rz; }
     const len = Math.hypot(mx, mz);
     const moving = len > 0.01;
-    const running = moving && (k.has('ShiftLeft') || k.has('ShiftRight'));
+    const sneaking = k.has('KeyC');
+    const running = moving && !sneaking && (opts.canRun ?? true) && opts.maxSpeed == null && (k.has('ShiftLeft') || k.has('ShiftRight'));
     // Ôm thùng nặng: chậm hơn một chút. Chạy khi ôm thùng (2,7) thua kiểm kê viên chạy (3,4+) → muốn thoát phải thả thùng.
     const sp = this.speeds;
-    const speed = this.carrying ? (running ? sp.carryRun : sp.carryWalk) : running ? sp.run : sp.walk;
+    let speed = (this.carrying ? (running ? sp.carryRun : sp.carryWalk) : running ? sp.run : sp.walk) * (opts.speedMul ?? 1);
+    if (sneaking) speed *= this.sneakMul;
+    if (opts.maxSpeed != null) speed = Math.min(speed, opts.maxSpeed);
+    const solids = opts.extra?.length ? [...SOLIDS, ...opts.extra] : SOLIDS;
 
     if (moving) {
       mx /= len;
       mz /= len;
       this.pos.x += mx * speed * dt;
-      for (const b of SOLIDS) pushOutCircle(this.pos, RADIUS, b);
+      for (const b of solids) pushOutCircle(this.pos, RADIUS, b);
       this.pos.z += mz * speed * dt;
-      for (const b of SOLIDS) pushOutCircle(this.pos, RADIUS, b);
-      this.bob += dt * (running ? 11 : 7.5);
+      for (const b of solids) pushOutCircle(this.pos, RADIUS, b);
+      this.bob += dt * (running ? 11 : sneaking ? 5 : 7.5);
     }
-    const bobY = moving ? Math.sin(this.bob) * (running ? 0.05 : 0.03) : 0;
-    this.camera.position.set(this.pos.x, EYE + bobY, this.pos.z);
+    // Kiện hàng đang khiêng phía trước: không cho đâm xuyên kệ / tường (đẩy người lùi lại), kể cả khi xoay người
+    if (opts.bodies?.length) {
+      for (let it = 0; it < 2; it++) {
+        for (const [d, r] of opts.bodies) {
+          const c = { x: this.pos.x + f.x * d, z: this.pos.z + f.z * d };
+          const c0 = { ...c };
+          for (const b of SOLIDS) pushOutCircle(c, r, b);
+          this.pos.x += c.x - c0.x;
+          this.pos.z += c.z - c0.z;
+        }
+        for (const b of solids) pushOutCircle(this.pos, RADIUS, b);
+      }
+    }
+    this.eye += ((sneaking ? EYE - 0.22 : EYE) - this.eye) * Math.min(1, dt * 8);
+    const bobY = moving ? Math.sin(this.bob) * (running ? 0.05 : sneaking ? 0.015 : 0.03) : 0;
+    this.camera.position.set(this.pos.x, this.eye + bobY, this.pos.z);
 
     // Tiếng động: chạy thì ồn (~10 m), ôm thùng đi lạch cạch (~3 m). Đi bộ thường thì im.
     if (running) {
@@ -147,13 +175,13 @@ export class PlayerController {
     } else {
       this.runNoiseT = 0.3;
     }
-    if (this.carrying && moving) {
+    if (this.carrying && moving && !sneaking) {
       this.carryNoiseT += dt;
       if (this.carryNoiseT >= 0.9) {
         this.carryNoiseT = 0;
         this.onNoise({ ...this.pos }, 3, 1);
       }
     }
-    return { moving, running };
+    return { moving, running, sneaking };
   }
 }

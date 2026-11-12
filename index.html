@@ -17,6 +17,7 @@
           <small>NHÂN VIÊN THỬ VIỆC</small>
           <b id="badge-name"></b>
           <div id="holes"><span></span><span></span><span></span></div>
+          <div id="records"></div>
         </div>
       </div>
       <div id="crosshair"></div>
@@ -27,61 +28,228 @@
         <div class="bar"><i id="scan-bar"></i></div>
         <div id="scan-state"></div>
       </div>
+      <div id="stamina"><span>THỂ LỰC</span><div class="bar"><i id="stamina-bar"></i></div></div>
+      <div id="item" hidden>
+        <div id="item-band"></div>
+        <b id="item-name"></b>
+        <div id="item-price"></div>
+        <div id="item-hsd"></div>
+        <div class="bar"><i id="item-bar"></i></div>
+        <div id="item-keys"></div>
+      </div>
+      <div id="sick" hidden>ĐAU BỤNG · đi chậm, rên thành tiếng</div>
       <div id="toast"></div>
       <div id="announce"></div>
       <div id="vignette"></div>
       <div id="count"></div>
-      <div id="sheet" class="receipt" hidden></div>
+      <div id="sheet" hidden></div>
+      <div id="fps" hidden></div>
       <pre id="debug" hidden></pre>
     </div>
 
-    <div id="menu" class="overlay">
-      <div class="panel">
-        <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi</p>
-        <h1>Hợp Đồng <span>30 Đêm</span></h1>
-        <p class="lead">Thử việc 5 đêm, mỗi đêm khoảng 4,5 phút. Làm đủ chỉ tiêu <b>sau lưng Người Kiểm Kê</b>. Bị tia quét đỏ giữ 2 giây là bị đóng thùng.</p>
-        <div class="cols">
-          <ul>
-            <li><b>WASD</b> đi · <b>Shift</b> chạy (ồn)</li>
-            <li><b>E</b> lấy thùng / xếp hàng / ghi nhiệt độ</li>
-            <li><b>Giữ F</b> quét kệ (máy quét kêu bíp)</li>
-            <li><b>Giữ Q</b> ngắm (hiện đường bay và chỗ lon rơi), <b>thả Q</b> ném lon để dụ nó · <b>E</b> nhặt lại (06:00 mỗi lon còn trên sàn bị trừ 1 công)</li>
-            <li><b>T</b> đèn pin (khi mất điện) · <b>G</b> thả thùng để chạy</li>
-            <li><b>Tab</b> phiếu việc · <b>F3</b> thông tin gỡ lỗi</li>
-            <li><b>P</b> bảng sự kiện (chơi thử: mất điện, tua giờ, chỉnh thông số)</li>
-          </ul>
-          <ul>
-            <li>Quét kệ: 2 công · xếp kệ thiếu hàng: 1 công · xếp tủ lạnh HẾT HÀNG (thùng xốp ở KHO LẠNH): 2 công</li>
-            <li>Ghi nhiệt độ ở kho lạnh: 1 công, việc an toàn chỉ tính tối đa nửa chỉ tiêu</li>
-            <li><b>Đầu ca</b> bạn ở PHÒNG NGHỈ: chạy tới <b>máy chấm công</b> trong KHO để vào ca trước 22:30 (trễ trừ 2 công). 06:00 quay lại đó điểm danh.</li>
-            <li><b>KHO và KHO LẠNH là khu lấy hàng:</b> đứng trong đó kiểm kê viên không kiểm đếm được bạn.</li>
-            <li>Thiếu công hoặc vắng điểm danh: thẻ bị bấm 1 lỗ. 3 lỗ là hết.</li>
-            <li><b>Chỉ tiêu chỉ là mức tối thiểu.</b> Suốt ca máy in giao thêm phiếu việc có hạn giờ. Trễ hạn: bị bấm lỗ, và siêu thị tối dần.</li>
-            <li>Vượt 150% chỉ tiêu: nhận phiếu khen, tự xoá lỗ kế tiếp.</li>
-          </ul>
+    <!-- ===== Menu chính ===== -->
+    <div id="menu" class="overlay menu">
+      <div class="menu-shell">
+        <div class="brand">
+          <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi</p>
+          <h1>Hợp Đồng <span>30 Đêm</span></h1>
+          <p class="lead">Ca đêm ở một siêu thị không bao giờ mở cửa. Làm đủ <b>việc được giao</b> sau lưng Người Kiểm Kê. Bị tia quét đỏ giữ 2 giây là bị đóng thùng.</p>
         </div>
-        <label for="name">Tên nhân viên</label>
-        <div class="start-row">
-          <input id="name" maxlength="14" placeholder="Minh" autocomplete="off" />
-          <button id="start">Nhận ca</button>
-        </div>
-        <div class="quality-row">
-          <label for="quality">Đồ hoạ</label>
-          <select id="quality">
-            <option value="auto">Tự động</option>
-            <option value="thap">Thấp (máy yếu)</option>
-            <option value="vua">Vừa</option>
-            <option value="cao">Cao</option>
-          </select>
-          <span id="quality-info"></span>
-        </div>
-        <p class="note">Nên đeo tai nghe. Loa dùng giọng tiếng Việt của trình duyệt nếu máy có; nếu không, chỉ hiện chữ.</p>
+
+        <nav class="menu-screen" data-screen="main">
+          <button class="big" data-go="play">Chơi</button>
+          <button class="big alt" data-go="guide">Hướng dẫn chơi</button>
+          <button class="big alt" data-go="settings">Cài đặt</button>
+          <p class="note">Nên đeo tai nghe. Loa dùng giọng tiếng Việt của trình duyệt nếu máy có; nếu không, chỉ hiện chữ.</p>
+        </nav>
+
+        <section class="menu-screen" data-screen="play" hidden>
+          <h2>Hồ sơ nhân viên</h2>
+          <label for="name">Tên nhân viên (in trên thẻ, phiếu việc và… nhãn thùng)</label>
+          <div class="start-row">
+            <input id="name" maxlength="14" placeholder="Minh" autocomplete="off" />
+            <button id="start">Nhận ca</button>
+          </div>
+          <p class="note" id="play-info"></p>
+          <div class="row-btns"><button class="ghost" data-go="main">← Quay lại</button></div>
+        </section>
       </div>
     </div>
 
+    <!-- ===== Cài đặt (mở từ menu chính hoặc khi tạm dừng) ===== -->
+    <div id="settings" class="overlay" hidden>
+      <div class="win">
+        <header><h2>Cài đặt</h2><button class="x" data-close="settings" aria-label="Đóng">✕</button></header>
+        <div class="tabs" role="tablist">
+          <button class="on" data-tab="gfx">Đồ hoạ</button>
+          <button data-tab="snd">Âm thanh</button>
+          <button data-tab="voice">Voice chat</button>
+          <button data-tab="ctl">Điều khiển</button>
+        </div>
+        <div class="tab-body" data-body="gfx">
+          <div class="field"><span>Chất lượng</span>
+            <select id="quality">
+              <option value="auto">Tự động</option>
+              <option value="thap">Thấp (máy yếu)</option>
+              <option value="vua">Vừa</option>
+              <option value="cao">Cao</option>
+            </select>
+            <small id="quality-info"></small>
+          </div>
+          <p class="hint-line" id="quality-later" hidden>Đổi chất lượng khi đang trong ca sẽ áp dụng từ lần nhận ca sau.</p>
+          <div class="field"><span>Góc nhìn</span><input type="range" id="set-fov" min="60" max="95" step="1"><b data-out="fov"></b></div>
+          <div class="field"><span>Độ sáng</span><input type="range" id="set-brightness" min="0.7" max="1.6" step="0.05"><b data-out="brightness"></b></div>
+          <label class="ck"><input type="checkbox" id="set-showFps"> Hiện số khung hình / giây</label>
+        </div>
+        <div class="tab-body" data-body="snd" hidden>
+          <div class="field"><span>Âm lượng tổng</span><input type="range" id="set-master" min="0" max="1" step="0.05"><b data-out="master"></b></div>
+          <div class="field"><span>Nhạc nền</span><input type="range" id="set-music" min="0" max="1" step="0.05"><b data-out="music"></b></div>
+          <div class="field"><span>Âm thanh trong game</span><input type="range" id="set-sfx" min="0" max="1" step="0.05"><b data-out="sfx"></b></div>
+          <div class="field"><span>Loa siêu thị (giọng đọc)</span><input type="range" id="set-announcer" min="0" max="1" step="0.05"><b data-out="announcer"></b></div>
+          <label class="ck"><input type="checkbox" id="set-subtitles"> Hiện chữ khi loa đọc</label>
+          <div class="row-btns"><button class="ghost" id="snd-test">▶ Nghe thử</button></div>
+        </div>
+        <div class="tab-body" data-body="voice" hidden>
+          <p class="soon">Voice chat dùng khi có <b>chơi mạng 2–4 người</b> (giai đoạn 2). Các lựa chọn dưới đây được lưu sẵn và sẽ áp dụng ngay khi có.</p>
+          <label class="ck"><input type="checkbox" id="set-voiceEnabled"> Bật voice chat</label>
+          <div class="field"><span>Cách nói</span>
+            <select id="set-voiceMode"><option value="ptt">Giữ phím để nói</option><option value="open">Micro luôn mở</option></select>
+          </div>
+          <div class="field"><span>Phím giữ để nói</span><button class="ghost keybind" id="set-voiceKey"></button></div>
+          <div class="field"><span>Âm lượng người khác</span><input type="range" id="set-voiceVolume" min="0" max="1" step="0.05"><b data-out="voiceVolume"></b></div>
+          <div class="field"><span>Độ nhạy micro</span><input type="range" id="set-micGain" min="0" max="1" step="0.05"><b data-out="micGain"></b></div>
+          <div class="field"><span>Micro</span><select id="set-micId"><option value="">Mặc định của máy</option></select></div>
+          <label class="ck"><input type="checkbox" id="set-voiceProximity"> Nghe theo khoảng cách (ở xa nghe nhỏ, Người Kiểm Kê cũng nghe thấy tiếng nói)</label>
+          <div class="row-btns"><button class="ghost" id="mic-test">🎙 Thử micro</button><div class="meter"><i id="mic-meter"></i></div></div>
+          <p class="hint-line" id="mic-info"></p>
+        </div>
+        <div class="tab-body" data-body="ctl" hidden>
+          <div class="field"><span>Độ nhạy chuột</span><input type="range" id="sens" min="0.3" max="2.5" step="0.05"><b id="sens-val"></b></div>
+          <table class="keys">
+            <tr><td>W A S D</td><td>Đi</td></tr>
+            <tr><td>Shift</td><td>Chạy (ồn, tốn thể lực)</td></tr>
+            <tr><td>Giữ C</td><td>Đi rón rén (chậm, không ồn)</td></tr>
+            <tr><td>E</td><td>Tương tác: lấy / xếp / đẩy xe / gom rác / mở tủ điện…</td></tr>
+            <tr><td>Giữ F</td><td>Quét kệ</td></tr>
+            <tr><td>Giữ R</td><td>Ăn / uống món đang cầm</td></tr>
+            <tr><td>Giữ Q / thả Q</td><td>Ngắm / ném lon để dụ Người Kiểm Kê</td></tr>
+            <tr><td>G</td><td>Thả thùng / buông kiện / buông xe</td></tr>
+            <tr><td>T</td><td>Đèn pin</td></tr>
+            <tr><td>Tab</td><td>Bìa kẹp phân công + bản đồ</td></tr>
+            <tr><td>Esc</td><td>Tạm dừng (cài đặt, hướng dẫn)</td></tr>
+            <tr><td>P</td><td>Bảng sự kiện (chơi thử)</td></tr>
+          </table>
+        </div>
+        <footer><button class="ghost" id="set-reset">Khôi phục mặc định</button><button data-close="settings">Xong</button></footer>
+      </div>
+    </div>
+
+    <!-- ===== Hướng dẫn chơi ===== -->
+    <div id="guide" class="overlay" hidden>
+      <div class="win">
+        <header><h2>Hướng dẫn chơi</h2><button class="x" data-close="guide" aria-label="Đóng">✕</button></header>
+        <div class="tabs" role="tablist">
+          <button class="on" data-tab="g1">Cơ bản</button>
+          <button data-tab="g2">Việc trong ca</button>
+          <button data-tab="g3">Người Kiểm Kê</button>
+          <button data-tab="g4">Điều khiển</button>
+          <button data-tab="g5">Mẹo</button>
+        </div>
+        <div class="tab-body guide" data-body="g1">
+          <p>Bạn là nhân viên thử việc ca đêm (22:00 → 06:00, khoảng 6,5 phút ngoài đời). Thử việc 5 đêm; qua được thì được mời ký hợp đồng 30 đêm.</p>
+          <ul>
+            <li><b>Đầu ca</b> bạn ở PHÒNG NGHỈ. Chạy tới <b>MÁY CHẤM CÔNG trong KHO</b> để vào ca trước 22:30.</li>
+            <li>Bấm <b>Tab</b> để giơ bìa kẹp: <b>danh sách việc được giao</b> cho riêng bạn và <b>bản đồ siêu thị</b> có đánh số chỗ làm từng việc. Mũi tên vàng là bạn.</li>
+            <li><b>06:00</b> phải có mặt ở máy chấm công để điểm danh.</li>
+            <li><b>Thẻ nhân viên có 3 lỗ</b>. Bấm đủ 3 lỗ là chấm dứt hợp đồng.</li>
+          </ul>
+          <h3>Phiếu đánh giá lúc 06:00</h3>
+          <ul>
+            <li>Còn <b>việc được giao</b> chưa xong: bấm <b>1 lỗ</b> (tối đa 1 lỗ mỗi đêm vì việc).</li>
+            <li>Vắng điểm danh 06:00: bấm 1 lỗ.</li>
+            <li><b>Ghi hồ sơ</b>: phiếu phát sinh trễ hạn, chấm công vào ca trễ, ăn hàng quá 100.000đ. <b>3 lần ghi = 1 lỗ</b> (cộng dồn qua các đêm).</li>
+            <li><b>Lương</b> 300.000đ / đêm: ăn hàng trên kệ trừ đúng giá tiền, lon nước ném ra để lại trên sàn trừ 20.000đ / lon.</li>
+            <li>Xong hết việc, không trễ phiếu nào, không bị ghi hồ sơ: nhận <b>PHIẾU KHEN</b>, tự xoá lỗ kế tiếp.</li>
+          </ul>
+        </div>
+        <div class="tab-body guide" data-body="g2" hidden>
+          <ul>
+            <li><b>Quét kệ</b> (số xanh): tới đúng đoạn kệ, nhìn vào kệ, <b>giữ F</b>. Trên nóc kệ có biển xanh <b>CẦN QUÉT</b> nhìn thấy từ xa.</li>
+            <li><b>Xếp kệ THIẾU HÀNG</b> (số đỏ): lấy thùng ở đống thùng trong KHO, mang tới kệ có thẻ đỏ, bấm E.</li>
+            <li><b>Xếp tủ lạnh HẾT HÀNG</b>: lấy thùng xốp ở KHO LẠNH.</li>
+            <li><b>Ghi nhiệt độ tủ đông</b>: tới bảng nhiệt độ trong KHO LẠNH đúng mốc giờ được giao (có 40 phút để làm).</li>
+            <li><b>Hàng lỗi</b> (số cam): bìa kẹp ghi tên món, đoạn kệ, <b>tầng</b>; trên nóc kệ có biển cam <b>⚠ HÀNG LỖI</b>. Hàng lỗi trông nghiêng / phồng / ngả màu mốc / có tem HẾT HẠN. Cầm lên xem hạn sử dụng, rồi bỏ vào <b>THÙNG HÀNG LỖI</b> đỏ trong kho.</li>
+            <li><b>Gom rác</b> (1 lần mỗi đêm): 5 thùng rác có biển xanh "CẦN GOM" rải trong siêu thị. Xách tay tối đa 2 túi, hoặc đẩy <b>XE GOM RÁC</b> (vàng, trong kho) gom một lượt tới 6 túi. Đổ vào <b>THÙNG RÁC LỚN</b> trong kho.</li>
+            <li><b>Phiếu phát sinh</b> (chữ cái tím): máy in giao thêm trong ca, có hạn giờ. Việc nặng được giao cách xa nhau.</li>
+            <li><b>Kiện nước</b> (từ đêm 2): ~90 kg. 2 người khiêng, kéo lê một mình (rất chậm, ồn), hoặc chất lên <b>XE ĐẨY HÀNG</b> trong kho rồi đẩy ra ĐẢO KHUYẾN MÃI.</li>
+            <li><b>Mất điện</b> (từ đêm 2): tới <b>PHÒNG ĐIỆN</b>, mở tủ điện tổng. Bật các cầu dao nhánh <b>đúng thứ tự trên sơ đồ</b> dán trong cửa tủ, rồi gạt CẦU DAO TỔNG. Bật sai: tóe lửa, rất ồn, phải làm lại.</li>
+            <li><b>Xe đẩy hàng</b> cũng chở được 3 thùng hàng khô một lúc.</li>
+          </ul>
+        </div>
+        <div class="tab-body guide" data-body="g3" hidden>
+          <ul>
+            <li>Người Kiểm Kê đi tuần với máy quét. Bị <b>tia quét đỏ</b> giữ đủ 2 giây (nó đếm "Một… Hai…") là bị đóng thùng.</li>
+            <li>Nó <b>nghe</b>: chạy, kéo lê kiện hàng, xe đẩy lạch cạch, bật sai cầu dao, máy quét bíp lỗi, lon nước rơi, tiếng rên khi đau bụng.</li>
+            <li>Khi mất điện nó <b>chạy</b> và thấy ánh đèn pin từ xa.</li>
+            <li><b>KHO và KHO LẠNH</b> là khu lấy hàng: đứng trong đó nó không kiểm đếm được bạn.</li>
+            <li><b>PHÒNG KIỂM KÊ luôn khoá</b> với nhân viên: không vào trốn được.</li>
+            <li>Ném lon nước (giữ Q, thả Q) để dụ nó đi chỗ khác. Nhớ nhặt lại lon.</li>
+          </ul>
+        </div>
+        <div class="tab-body guide" data-body="g4" hidden>
+          <table class="keys">
+            <tr><td>W A S D · Shift · Giữ C</td><td>Đi · chạy · đi rón rén</td></tr>
+            <tr><td>E</td><td>Tương tác</td></tr>
+            <tr><td>Giữ F</td><td>Quét kệ</td></tr>
+            <tr><td>Giữ R</td><td>Ăn / uống món đang cầm</td></tr>
+            <tr><td>Giữ Q, thả Q</td><td>Ngắm, ném lon (chuột phải: huỷ)</td></tr>
+            <tr><td>G</td><td>Thả thùng / buông kiện / buông xe</td></tr>
+            <tr><td>T</td><td>Đèn pin</td></tr>
+            <tr><td>Tab</td><td>Bìa kẹp phân công + bản đồ</td></tr>
+            <tr><td>Esc</td><td>Tạm dừng</td></tr>
+          </table>
+        </div>
+        <div class="tab-body guide" data-body="g5" hidden>
+          <ul>
+            <li>Mở bản đồ (Tab) trước khi đi: gom các việc gần nhau thành một vòng.</li>
+            <li>Đẩy xe rác đi gom một lượt nhanh hơn xách tay, nhưng bánh xe kêu. Giữ C để đẩy nhỏ tiếng hơn.</li>
+            <li>Khi mất điện, nhìn kỹ sơ đồ trước khi bật: mỗi lần mất điện thứ tự lại khác.</li>
+            <li>Ăn hàng hồi thể lực nhưng trừ lương; hàng lỗi gây đau bụng (rên to) và chóng mặt.</li>
+            <li>Biển cam / xanh trên nóc kệ nhìn thấy qua nhiều dãy: dùng để định hướng.</li>
+          </ul>
+        </div>
+        <footer><span></span><button data-close="guide">Đã hiểu</button></footer>
+      </div>
+    </div>
+
+    <!-- ===== Tạm dừng ===== -->
     <div id="pause" class="overlay" hidden>
-      <div class="panel small"><h2>Tạm dừng</h2><p>Bấm vào màn hình để tiếp tục ca làm việc.</p>
-        <label class="sens">Độ nhạy chuột <input id="sens" type="range" min="0.3" max="2.5" step="0.05"> <b id="sens-val"></b></label></div>
+      <div class="panel small pause-menu">
+        <h2>Tạm dừng</h2>
+        <p class="note">Ca làm việc vẫn chờ bạn.</p>
+        <button class="big" id="resume">Tiếp tục</button>
+        <button class="big alt" data-open="settings">Cài đặt</button>
+        <button class="big alt" data-open="guide">Hướng dẫn chơi</button>
+        <button class="big ghost" id="to-menu">Về menu chính</button>
+      </div>
+    </div>
+
+    <!-- ===== Tủ điện tổng (minigame sửa điện) ===== -->
+    <div id="power" class="overlay power" hidden>
+      <div class="cabinet">
+        <div class="door-paper">
+          <h3>SƠ ĐỒ ĐÓNG ĐIỆN</h3>
+          <p>Bật cầu dao nhánh theo đúng thứ tự, rồi gạt cầu dao tổng.</p>
+          <ol id="power-order"></ol>
+          <p class="warn">BẬT SAI THỨ TỰ = CHẬP ĐIỆN</p>
+        </div>
+        <div class="panel-box">
+          <div class="breakers" id="power-breakers"></div>
+          <button class="main-switch" id="power-main"><span>CẦU DAO TỔNG</span><i></i></button>
+          <p id="power-msg"></p>
+          <p class="note">Esc / chuột phải: đóng tủ (đang mở tủ vẫn có thể bị phát hiện)</p>
+        </div>
+      </div>
     </div>
 
     <div id="eval" class="overlay" hidden>

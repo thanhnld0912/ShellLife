@@ -10,6 +10,15 @@ import {
   CLOCK_ZONE, COUNTER, PLAYER_SPAWN, PLAYER_SPAWN_YAW, SOLIDS, coldUnitById, inSafeRoom, sectionAt, type ColdUnit, type Section,
 } from './sim/layout.ts';
 import { ThrowAim } from './client/throwAim.ts';
+import { HeldItem } from './client/heldItem.ts';
+import { CoWorker } from './client/coworker.ts';
+import { MenuUI } from './client/menu.ts';
+import type { Settings } from './client/settings.ts';
+import { BULKY_SIZE, CART_SIZE, POWER_ZONE, PROMO_ZONE, TRASH_BINS } from './sim/layout.ts';
+import { CART_MOVE } from './sim/game.ts';
+import type { AABB } from './sim/geometry.ts';
+import { DEFECT_TEXT, hashStr, slotAt, slotByKey, type ShelfSlot } from './sim/shelfGoods.ts';
+import { formatPrice, productById } from './sim/products.ts';
 import { inBox, inflate, type V2 } from './sim/geometry.ts';
 import { hasLOS } from './sim/auditor.ts';
 import { buildWorld, type World } from './render/world.ts';
@@ -20,7 +29,7 @@ import { GameAudio } from './client/audio.ts';
 import { Hud } from './client/hud.ts';
 import { MouseLook } from './client/mouseLook.ts';
 import { DevPanel, applyDevSaved, type DevHost } from './client/devPanel.ts';
-import { loadModels, type ModelLib } from './render/models.ts';
+import { loadModels, MODEL_NAMES, type ModelLib } from './render/models.ts';
 import {
   QUALITY, ResolutionGovernor, detectQuality, loadQualityChoice, resolveQuality, saveQualityChoice, type QualityChoice,
 } from './render/quality.ts';
@@ -66,12 +75,12 @@ applyQuality();
   sel.value = qualityChoice;
   show();
   sel.addEventListener('change', () => {
-    if (mode !== 'menu') return;
     qualityChoice = sel.value as QualityChoice;
     saveQualityChoice(qualityChoice);
+    show();
+    if (mode !== 'menu') return; // đang trong ca: áp dụng từ lần nhận ca sau
     quality = resolveQuality(qualityChoice, renderer);
     applyQuality();
-    show();
   });
 }
 
@@ -81,6 +90,20 @@ let world: World | null = null;
 let auditorView: AuditorView | null = null;
 let captureView: CaptureView | null = null;
 let throwAim: ThrowAim | null = null;
+let heldItem: HeldItem | null = null;
+let coworker: CoWorker | null = null;
+/** Nhún nhẹ của bìa kẹp phiếu việc khi đi. */
+let sheetBob = 0;
+/** Đang mở tủ điện (minigame sửa điện). */
+let powerOpen = false;
+/** Túi rác xách tay (hình trên tay, góc nhìn thứ nhất). */
+const handBags = new THREE.Group();
+camera.add(handBags);
+let fpsT = 0;
+/** Đang giữ R để ăn / uống: thời gian đã giữ (giây). */
+let eatT = 0;
+let eatWarned = false;
+const EAT_TIME = 1.4;
 let deathStage: 'lunge' | 'cine' | 'black' | null = null;
 let deathT = 0;
 /** Góc máy cảnh đóng thùng. */
@@ -120,11 +143,47 @@ const devHost: DevHost = {
   timeScale: 1,
   onClose: () => {
     if (mode !== 'play') return;
-    hud.show('pause', true); // nếu khoá chuột không được (vd. đóng bằng Esc) thì bấm màn hình để tiếp tục
+    hud.show('pause', true); // nếu khoá chuột không được (vd. đóng bằng Esc) thì bấm "Tiếp tục"
     look.lock();
   },
 };
 const dev = new DevPanel(devHost);
+
+// ---- Menu chính, cài đặt, hướng dẫn ----
+let subtitles = true;
+const menu = new MenuUI({
+  look,
+  apply(st: Settings) {
+    audio.setVolumes(st);
+    camera.fov = st.fov;
+    camera.updateProjectionMatrix();
+    renderer.toneMappingExposure = st.brightness;
+    subtitles = st.subtitles;
+    hud.show('fps', st.showFps);
+  },
+  inGame: () => mode !== 'menu',
+  testSound() {
+    audio.start();
+    audio.tone(1320, 0.08, 0.08);
+    setTimeout(() => audio.tone(990, 0.16, 0.2), 200);
+    setTimeout(() => audio.speak('Kiểm tra âm thanh. Một. Hai.'), 500);
+  },
+  onOverlay() {
+    /* tạm dừng vẫn giữ nguyên */
+  },
+  resume() {
+    if (mode === 'play') look.lock();
+  },
+  quitToMenu() {
+    location.reload();
+  },
+});
+// Nhạc nền ở menu: trình duyệt chỉ cho phát tiếng sau lần bấm đầu tiên
+window.addEventListener('pointerdown', () => {
+  if (mode !== 'menu' || audio.ready) return;
+  audio.start();
+  audio.music('menu');
+}, { once: false });
 
 // ---- Tải model ----
 const startBtn = document.getElementById('start') as HTMLButtonElement;
@@ -137,6 +196,7 @@ loadModels((done, total) => (startBtn.textContent = `Đang tải model ${done}/$
   if (box) player.setCarryModel(box);
   startBtn.disabled = false;
   startBtn.textContent = 'Nhận ca';
+  document.getElementById('play-info')!.textContent = `Đồ hoạ: ${QUALITY[quality].label} (đổi trong Cài đặt) · thử việc 5 đêm, mỗi đêm khoảng 6,5 phút.`;
 });
 
 // ---- Bắt đầu ----
@@ -145,10 +205,14 @@ startBtn.addEventListener('click', () => {
   if (!models) return;
   const name = (nameInput.value.trim() || 'Minh').slice(0, 14);
   game = new Game(name, { events: dev.saved.events, tuning: dev.saved.tuning });
+  // Mức Thấp: hàng hoá là khối hộp, dán ảnh chụp mặt trước của từng món để vẫn thấy nhãn và hình
+  if (QUALITY[quality].proxyGoods) models.bakeImpostors(renderer, MODEL_NAMES.filter((n) => n.startsWith('hh_')));
   world = buildWorld(name, models, QUALITY[quality]);
   world.scene.add(camera);
   auditorView = new AuditorView(world.scene, models, QUALITY[quality].shadows);
   throwAim = new ThrowAim(world.scene, camera);
+  heldItem = new HeldItem(camera, models);
+  coworker = new CoWorker(world.scene, models);
   captureView = new CaptureView(world.scene, models);
   captureView.onLand = () => {
     const at = game?.auditor.capture?.at;
@@ -165,35 +229,27 @@ startBtn.addEventListener('click', () => {
   player.setCarrying(false);
   player.onNoise = (at, r, e) => game?.noise(at, r, e);
   audio.start();
+  audio.music('game');
   hud.show('menu', false);
   hud.show('hud', true);
-  hud.badge(name, 0);
+  hud.badge(name, 0, 0);
+  world.syncTrash(game.shift.trashFull);
+  world.syncCarts(game.shift.carts, null);
+  buildHandBags();
   mode = 'play';
   look.lock();
 });
 
-document.getElementById('pause')!.addEventListener('click', (e) => {
-  if ((e.target as HTMLElement).closest('.sens')) return;
-  if (mode === 'play') look.lock();
-});
 controls.addEventListener('lock', () => hud.show('pause', false));
 controls.addEventListener('unlock', () => {
   throwAim?.cancel();
-  if (mode === 'play' && !dev.isOpen) hud.show('pause', true);
-});
-
-// ---- Độ nhạy chuột (ở màn tạm dừng) ----
-const sensInput = document.getElementById('sens') as HTMLInputElement;
-const sensOut = document.getElementById('sens-val')!;
-sensInput.value = String(look.sensitivity);
-sensOut.textContent = look.sensitivity.toFixed(2);
-sensInput.addEventListener('input', () => {
-  look.setSensitivity(Number(sensInput.value));
-  sensOut.textContent = look.sensitivity.toFixed(2);
+  if (mode === 'play' && !dev.isOpen && !powerOpen) hud.show('pause', true);
 });
 
 // ---- Phím ----
 window.addEventListener('keydown', (e) => {
+  // Đang mở Cài đặt / Hướng dẫn: phím chỉ dành cho bảng đó
+  if (menu.overlayOpen) return;
   if (e.code === 'KeyP' && mode === 'play' && game && !e.repeat) {
     e.preventDefault();
     if (dev.isOpen) {
@@ -209,11 +265,15 @@ window.addEventListener('keydown', (e) => {
     dev.close();
     return;
   }
+  if (e.code === 'Escape' && powerOpen) {
+    closePower();
+    return;
+  }
   if (e.code === 'Tab' && mode === 'play') {
     e.preventDefault();
     if (game) {
       sheetOpen = !sheetOpen;
-      hud.sheet(game, sheetOpen);
+      hud.sheet(game, sheetOpen, player.pos, game.player.yaw);
     }
     return;
   }
@@ -257,6 +317,10 @@ window.addEventListener('contextmenu', (e) => {
 
 function startAim(): void {
   if (!game || !throwAim) return;
+  if (game.player.bulky !== null) {
+    hud.toast('Đang khiêng kiện hàng: hai tay bận, không ném lon được.', false);
+    return;
+  }
   throwAim.start(canCooldown <= 0);
   if (canCooldown > 0) hud.toast(`Đang lấy lon mới · còn ${Math.ceil(canCooldown)} giây`, false);
 }
@@ -272,7 +336,7 @@ function releaseAim(): void {
   if (!r) return;
   canCooldown = 6;
   audio.click(p3(player.pos, 1.4), 0.25, 700); // tiếng vung tay
-  hud.toast('Đã ném một lon nước. Nhớ nhặt lại: 06:00 mỗi lon còn trên sàn bị trừ 1 công.', true);
+  hud.toast('Đã ném một lon nước. Nhớ nhặt lại: 06:00 mỗi lon còn trên sàn bị trừ 20.000đ lương.', true);
 }
 
 function toggleFlash(): void {
@@ -283,7 +347,24 @@ function toggleFlash(): void {
 }
 
 function dropBox(): void {
-  if (!game || !world || !player.carrying) return;
+  if (!game || !world) return;
+  if (game.player.cart !== null) {
+    game.releaseCart();
+    audio.click(p3(player.pos, 0.4), 0.4, 700);
+    hud.toast('Đã buông xe đẩy.', true);
+    return;
+  }
+  if (game.player.bags > 0) {
+    hud.toast('Đang xách túi rác: mang về THÙNG RÁC LỚN trong kho để đổ.', false);
+    return;
+  }
+  if (game.player.bulky !== null) {
+    game.releaseBulky();
+    game.releaseBulky('ban');
+    hud.toast('Đã buông kiện hàng (rơi phịch xuống, ồn). Kiện nằm lại chỗ này, cầm lên lại được.', false);
+    return;
+  }
+  if (!player.carrying) return;
   const cold = player.carryKind === 'cold';
   player.setCarrying(false);
   game.dropBox();
@@ -299,7 +380,13 @@ function dropBox(): void {
 const raycaster = new THREE.Raycaster();
 const CENTER = new THREE.Vector2(0, 0);
 type Focus =
-  | { kind: 'shelf'; section: Section }
+  | { kind: 'shelf'; section: Section; slot: ShelfSlot | null }
+  | { kind: 'defectBin' }
+  | { kind: 'bulky'; id: number }
+  | { kind: 'cart'; id: number }
+  | { kind: 'trashBin'; id: number }
+  | { kind: 'dumpster' }
+  | { kind: 'powerPanel' }
   | { kind: 'pile' }
   | { kind: 'freezer' }
   | { kind: 'counter' }
@@ -315,7 +402,17 @@ function getFocus(): Focus {
   const hit = raycaster.intersectObjects(world.interactables(), false)[0];
   if (!hit) return null;
   const kind = hit.object.userData.kind as string;
-  if (kind === 'shelf') return { kind: 'shelf', section: sectionAt(hit.object.userData.row as number, hit.point.x, hit.point.z) };
+  if (kind === 'shelf') {
+    const section = sectionAt(hit.object.userData.row as number, hit.point.x, hit.point.z);
+    const slot = slotAt(section.id, hit.point.x, hit.point.y);
+    return { kind: 'shelf', section, slot: slot && game?.slotFilled(slot.key) ? slot : null };
+  }
+  if (kind === 'defectBin') return { kind: 'defectBin' };
+  if (kind === 'bulky') return { kind: 'bulky', id: hit.object.userData.id as number };
+  if (kind === 'cart') return { kind: 'cart', id: hit.object.userData.id as number };
+  if (kind === 'trashBin') return { kind: 'trashBin', id: hit.object.userData.id as number };
+  if (kind === 'dumpster') return { kind: 'dumpster' };
+  if (kind === 'powerPanel') return { kind: 'powerPanel' };
   if (kind === 'pile') return { kind: 'pile' };
   if (kind === 'freezer') return { kind: 'freezer' };
   if (kind === 'counter') return { kind: 'counter' };
@@ -328,6 +425,105 @@ function getFocus(): Focus {
 function interact(): void {
   if (!game || !world) return;
   const f = getFocus();
+  // Tủ điện tổng (PHÒNG ĐIỆN)
+  if (f?.kind === 'powerPanel') {
+    if (game.power) hud.toast('Tủ điện tổng: đang có điện. Khi mất điện, tới đây bật lại cầu dao theo sơ đồ.', true);
+    else if (game.player.cart !== null || game.player.bulky !== null || player.carrying) hud.toast('Hai tay đang bận: bỏ đồ xuống rồi mới thao tác tủ điện.', false);
+    else openPower();
+    return;
+  }
+  // Đang khiêng kiện hàng: E để đặt ở ĐẢO KHUYẾN MÃI
+  if (game.player.bulky !== null) {
+    const r = game.placeBulky();
+    if (r.ok) {
+      game.releaseBulky('ban');
+      audio.clank(p3(player.pos, 0.3));
+    }
+    hud.toast(r.msg, r.ok);
+    return;
+  }
+  // Rác: thùng rác, thùng rác lớn (xách tay hoặc bằng xe rác)
+  if (f?.kind === 'trashBin') {
+    const r = game.takeTrash(f.id);
+    if (r.ok) world.syncTrash(game.shift.trashFull);
+    hud.toast(r.msg, r.ok);
+    return;
+  }
+  if (f?.kind === 'dumpster') {
+    const r = game.dumpTrash();
+    hud.toast(r.msg, r.ok);
+    return;
+  }
+  // Đang đẩy xe
+  const cart = game.heldCart;
+  if (cart) {
+    if (f?.kind === 'bulky') {
+      const r = game.loadBulky(f.id);
+      hud.toast(r.msg, r.ok);
+      if (r.ok) audio.clank(p3(player.pos, 0.4));
+      return;
+    }
+    if (cart.bulky !== null) {
+      const r = game.placeBulky();
+      if (r.ok) audio.clank(p3(player.pos, 0.3));
+      hud.toast(r.msg, r.ok);
+      return;
+    }
+    if (f?.kind === 'pile' && cart.kind === 'hang') {
+      if (game.takeBox()) {
+        world.setPileCount(game.shift.pile);
+        audio.click(p3(player.pos, 0.6), 0.5, 900);
+        hud.toast(`Chất thùng hàng khô lên xe (${cart.boxes}/3). Đẩy tới kệ THIẾU HÀNG, [E] để xếp.`, true);
+      } else hud.toast(game.shift.pile <= 0 ? 'Hết thùng hàng khô trong kho.' : 'Xe đã đầy (3 thùng).', false);
+      return;
+    }
+    if (f?.kind === 'shelf' && cart.boxes > 0) {
+      const r = game.restock(f.section.id);
+      if (r.ok) {
+        world.setRestocked(f.section.id);
+        world.syncShelf(game.shift, f.section.id);
+        audio.click(p3(player.pos, 1), 0.6, 1200);
+      }
+      hud.toast(r.msg, r.ok);
+      return;
+    }
+    if (f?.kind === 'counter' && cart.boxes > 0) {
+      const r = game.deliver();
+      hud.toast(r.msg, r.ok);
+      return;
+    }
+    hud.toast(cart.kind === 'hang' ? 'Đẩy xe hàng: [E] vào kiện nước / đống thùng để chất · [G] buông xe' : 'Đẩy xe rác: [E] vào thùng rác để gom · đổ ở THÙNG RÁC LỚN trong kho · [G] buông xe', false);
+    return;
+  }
+  if (f?.kind === 'cart') {
+    if (player.carrying) {
+      hud.toast('Đang ôm thùng: thả thùng [G] rồi mới đẩy xe.', false);
+      return;
+    }
+    const r = game.grabCart(f.id);
+    if (r.ok) audio.click(p3(player.pos, 0.4), 0.4, 600);
+    hud.toast(r.msg, r.ok);
+    return;
+  }
+  if (game.player.bags > 0) {
+    hud.toast('Đang xách túi rác: gom thêm ở thùng rác khác (tối đa 2), hoặc đổ vào THÙNG RÁC LỚN trong kho.', false);
+    return;
+  }
+  if (f?.kind === 'bulky') {
+    if (player.carrying) {
+      hud.toast('Đang ôm thùng: thả thùng [G] rồi mới khiêng kiện hàng.', false);
+      return;
+    }
+    const r = game.grabBulky(f.id);
+    if (r.ok) {
+      throwAim?.cancel();
+      // Đồng nghiệp ảo (bảng sự kiện) chạy tới cầm đầu kia
+      const helped = !!coworker?.isActive && game.grabBulky(f.id, 'ban').ok;
+      audio.click(p3(player.pos, 0.5), 0.6, 600);
+      hud.toast(helped ? 'Đồng nghiệp cầm đầu kia: hai người khiêng, đi nhanh và êm.' : r.msg, helped);
+    } else if (r.msg) hud.toast(r.msg, false);
+    return;
+  }
   // Nhặt lon nước đã ném (ôm thùng vẫn nhặt được)
   if (f?.kind === 'can') {
     const r = game.pickUpLitter(f.id);
@@ -343,10 +539,11 @@ function interact(): void {
       const r = game.restock(f.section.id);
       if (r.ok) {
         world.setRestocked(f.section.id);
+        world.syncShelf(game.shift, f.section.id);
         player.setCarrying(false);
         game.noise({ ...player.pos }, 5, 1.5);
         audio.click(p3(player.pos, 1), 0.6, 1200);
-        hud.toast(`+${r.cong} công · ${r.msg}`, true);
+        hud.toast(r.msg, true);
       } else hud.toast(r.msg, false);
     }
     if (f?.kind === 'counter') {
@@ -355,7 +552,7 @@ function interact(): void {
         player.setCarrying(false);
         audio.click(p3(player.pos, 1), 0.6, 1200);
         audio.tone(1500, 0.08, 0.08);
-        hud.toast(`+${r.cong} công · ${r.msg}`, true);
+        hud.toast(r.msg, true);
       } else hud.toast(r.msg, false);
     }
     if (f?.kind === 'cold') {
@@ -365,9 +562,50 @@ function interact(): void {
         player.setCarrying(false);
         game.noise({ ...player.pos }, 5, 1.5);
         audio.click(p3(player.pos, 1), 0.6, 1000);
-        hud.toast(`+${r.cong} công · ${r.msg}`, true);
+        hud.toast(r.msg, true);
       } else hud.toast(r.msg, false);
     }
+    return;
+  }
+  // Đang cầm một món lấy từ kệ: đặt lại kệ, hoặc bỏ vào thùng HÀNG LỖI
+  if (game.player.hand) {
+    if (f?.kind === 'defectBin') {
+      const sec = slotByKey(game.player.hand.key)?.section;
+      const r = game.discardHeld();
+      if (r.ok) {
+        heldItem?.set(null);
+        if (sec) world.syncShelf(game.shift, sec);
+        audio.clank(p3(player.pos, 0.5));
+        hud.toast(r.msg, true);
+      } else hud.toast(r.msg, false);
+      return;
+    }
+    if (f?.kind === 'shelf') {
+      const key = game.player.hand.key;
+      const r = game.putBack();
+      if (r.ok) {
+        heldItem?.set(null);
+        world.syncShelf(game.shift, slotByKey(key)!.section);
+        audio.click(p3(player.pos, 1), 0.3, 1600);
+        hud.toast(r.msg, true);
+      }
+      return;
+    }
+    hud.toast('Đang cầm hàng: [Giữ R] ăn / uống · nhìn vào kệ [E] đặt lại · hàng lỗi bỏ vào THÙNG HÀNG LỖI trong kho', false);
+    return;
+  }
+  if (f?.kind === 'defectBin') {
+    hud.toast(game.discardHeld().msg, false);
+    return;
+  }
+  if (f?.kind === 'shelf' && f.slot) {
+    const r = game.takeItem(f.slot.key);
+    if (r.ok) {
+      const h = game.player.hand!;
+      heldItem?.set(h.product, h.defect);
+      world.syncShelf(game.shift, f.section.id);
+      audio.click(p3(player.pos, 1), 0.25, 2000);
+    } else if (r.msg) hud.toast(r.msg, false);
     return;
   }
   if (f?.kind === 'pile') {
@@ -392,10 +630,7 @@ function interact(): void {
     const r = game.freezer();
     if (r.ok) {
       audio.tone(1500, 0.08, 0.08);
-      hud.toast(
-        r.safeCapped ? `${r.msg} · Đã đủ công an toàn, việc này không được tính thêm` : `+${r.cong} công (an toàn) · ${r.msg}`,
-        !r.safeCapped,
-      );
+      hud.toast(r.msg, true);
     } else hud.toast(r.msg, false);
   }
 }
@@ -403,7 +638,7 @@ function interact(): void {
 function updateScan(dt: number, f: Focus): void {
   if (!game) return;
   const needsStock = f?.kind === 'shelf' && game.shift.restockNeeded.has(f.section.id);
-  const holding = player.keys.has('KeyF') && !player.carrying && f?.kind === 'shelf' && !needsStock;
+  const holding = player.keys.has('KeyF') && !player.carrying && game.player.bulky === null && game.player.cart === null && f?.kind === 'shelf' && !needsStock;
   if (!holding || f?.kind !== 'shelf') {
     scanT = 0;
     scanTarget = null;
@@ -431,16 +666,259 @@ function updateScan(dt: number, f: Focus): void {
   hud.scanner(f.section.name, scanT / 1.5, false);
   if (scanT >= 1.5) {
     const r = game.scanSection(id);
-    hud.toast(r.ok ? `+${r.cong} công · ${r.msg}` : r.msg, r.ok);
+    hud.toast(r.msg, r.ok && !r.defects);
     audio.tone(1760, 0.12, 0.08);
+    if (r.defects) {
+      // Bíp lỗi: hai tiếng trầm, to
+      setTimeout(() => audio.tone(440, 0.22, 0.14, undefined, 'square'), 180);
+      setTimeout(() => audio.tone(330, 0.3, 0.14, undefined, 'square'), 430);
+    }
     scanT = 0;
     scanTarget = null;
   }
 }
 
+/** Món đang cầm: thẻ thông tin (tên, giá, hạn sử dụng) và giữ R để ăn / uống. */
+function updateHand(dt: number): void {
+  if (!game) return;
+  const h = game.player.hand;
+  if (!h) {
+    eatT = 0;
+    eatWarned = false;
+    if (heldItem) heldItem.eat = 0;
+    hud.item(null);
+    return;
+  }
+  const p = productById(h.product)!;
+  // Hạn sử dụng: hàng tốt còn vài tháng; hàng lỗi ghi rõ lỗi (cầm lên xem kỹ mới biết)
+  const months = 2 + (hashStr(h.key) % 14);
+  const hsd = h.defect === 'het_han' ? `HSD: 02/2019 · ${DEFECT_TEXT.het_han}` : h.defect ? `HSD: còn ${months} tháng · ${DEFECT_TEXT[h.defect]}` : `HSD: còn ${months} tháng`;
+  const edible = p.kind !== 'other';
+  const verb = p.kind === 'drink' ? 'uống' : 'ăn';
+  const keys = (edible ? `[Giữ R] ${verb} · ` : 'Không ăn uống được · ') + '[E] đặt lại kệ' + (h.defect ? ' · bỏ vào THÙNG HÀNG LỖI' : '');
+  const holding = player.keys.has('KeyR');
+  if (holding && edible) {
+    if (eatT === 0) audio.click(p3(player.pos, 1.3), 0.4, p.kind === 'drink' ? 2600 : 1400); // khui lon / xé gói
+    eatT += dt;
+    if (eatT >= EAT_TIME) {
+      const sec = slotByKey(h.key)?.section;
+      const r = game.eat();
+      eatT = 0;
+      heldItem?.set(null);
+      if (sec) world?.syncShelf(game.shift, sec);
+      hud.toast(r.msg, r.ok);
+      if (r.ok) audio.tone(660, 0.12, 0.06);
+      else audio.tone(160, 0.5, 0.15, undefined, 'sawtooth');
+      hud.item(null);
+      return;
+    }
+  } else {
+    if (holding && !edible && !eatWarned) {
+      eatWarned = true;
+      hud.toast(`${p.name} không ăn uống được!`, false);
+    }
+    if (!holding) eatWarned = false;
+    eatT = Math.max(0, eatT - dt * 3);
+  }
+  if (heldItem) heldItem.eat = eatT / EAT_TIME;
+  hud.item({ name: p.name, price: `${formatPrice(p.price)} / ${p.unit}`, color: p.color, hsd, bad: !!h.defect, keys }, eatT / EAT_TIME);
+}
+
+/** Kiện hàng nằm trên sàn (chưa ai khiêng, hoặc đã đặt ở ĐẢO KHUYẾN MÃI): vật cản cho người chơi. */
+function bulkySolids(): AABB[] {
+  if (!game) return [];
+  const out: AABB[] = [];
+  for (const c of game.shift.carts) {
+    if (c.pusher) continue;
+    const co = Math.abs(Math.cos(c.yaw));
+    const sn = Math.abs(Math.sin(c.yaw));
+    const hx = (CART_SIZE.len * sn + CART_SIZE.wid * co) / 2;
+    const hz = (CART_SIZE.len * co + CART_SIZE.wid * sn) / 2;
+    out.push({ minX: c.pos.x - hx, maxX: c.pos.x + hx, minZ: c.pos.z - hz, maxZ: c.pos.z + hz });
+  }
+  for (const b of game.shift.bulky) {
+    if (b.carriers.length || b.cart !== null) continue;
+    const c = Math.abs(Math.cos(b.yaw));
+    const sn = Math.abs(Math.sin(b.yaw));
+    const hx = (BULKY_SIZE.len * sn + BULKY_SIZE.wid * c) / 2;
+    const hz = (BULKY_SIZE.len * c + BULKY_SIZE.wid * sn) / 2;
+    out.push({ minX: b.pos.x - hx, maxX: b.pos.x + hx, minZ: b.pos.z - hz, maxZ: b.pos.z + hz });
+  }
+  return out;
+}
+
+/** Kiện hàng và đồng nghiệp ảo (bảng sự kiện → "Đồng nghiệp ảo đi theo"). */
+function updateCoworker(dt: number): void {
+  if (!game || !world || !coworker) return;
+  const want = game.dev.helper && (mode === 'play' || mode === 'eval');
+  if (want !== coworker.isActive) {
+    camera.getWorldDirection(tmpV);
+    coworker.setActive(want, player.pos, Math.atan2(tmpV.x, tmpV.z));
+    const hb = game.heldBulky;
+    if (want && hb) game.grabBulky(hb.id, 'ban');
+    if (!want) game.releaseBulky('ban');
+  }
+  const hb = game.heldBulky;
+  const duo = !!hb && hb.carriers.length >= 2;
+  world.syncBulky(game.shift.bulky, game.player.bulky, duo);
+  world.syncCarts(game.shift.carts, game.player.cart);
+  world.setAuditorPos(game.auditor.pos);
+  handBags.children.forEach((b, i) => (b.visible = i < game!.player.bags));
+  const frozen = mode === 'play' && !controls.isLocked && (!dev.isOpen || dev.pauses);
+  coworker.update(frozen ? 0 : dt, {
+    pos: player.pos, running: player.keys.has('ShiftLeft') && !game.player.sneak && !hb, sneak: game.player.sneak,
+    sheet: sheetOpen, light: player.flashOn,
+  }, hb && hb.carriers.includes('ban') ? hb : null);
+}
+
+// ---- Tủ điện tổng: bật cầu dao nhánh theo đúng thứ tự trên sơ đồ, rồi gạt cầu dao tổng ----
+const powerEl = document.getElementById('power')!;
+function openPower(): void {
+  if (!game?.breaker) return;
+  powerOpen = true;
+  sheetOpen = false;
+  if (game) hud.sheet(game, false);
+  throwAim?.cancel();
+  controls.unlock();
+  hud.show('pause', false);
+  powerEl.hidden = false;
+  document.getElementById('power-msg')!.textContent = 'Đọc sơ đồ bên trái, bật từng cầu dao theo thứ tự.';
+  document.getElementById('power-msg')!.className = '';
+  renderPower();
+  audio.click(p3(player.pos, 1.3), 0.6, 800);
+}
+function closePower(): void {
+  if (!powerOpen) return;
+  powerOpen = false;
+  powerEl.hidden = true;
+  if (mode === 'play') look.lock();
+}
+function renderPower(): void {
+  const b = game?.breaker;
+  if (!b) return;
+  document.getElementById('power-order')!.innerHTML = b.order.map((n, i) => `<li class="${i < b.next ? 'done' : ''}">${n}</li>`).join('');
+  document.getElementById('power-breakers')!.innerHTML = b.slots
+    .map((n, i) => `<div class="breaker ${b.on[i] ? 'on' : ''}" data-i="${i}"><span class="led"></span><span class="lever"></span><span>${n}</span></div>`)
+    .join('');
+}
+function sparkPower(): void {
+  const c = powerEl.querySelector('.cabinet')!;
+  c.classList.remove('spark');
+  void (c as HTMLElement).offsetWidth;
+  c.classList.add('spark');
+}
+document.getElementById('power-breakers')!.addEventListener('click', (e) => {
+  const el = (e.target as HTMLElement).closest('.breaker') as HTMLElement | null;
+  if (!el || !game) return;
+  const r = game.flipBreaker(Number(el.dataset.i));
+  const msg = document.getElementById('power-msg')!;
+  if (r.msg) {
+    msg.textContent = r.msg;
+    msg.className = r.ok ? '' : 'bad';
+  }
+  renderPower();
+});
+document.getElementById('power-main')!.addEventListener('click', () => {
+  if (!game) return;
+  const r = game.mainSwitch();
+  const msg = document.getElementById('power-msg')!;
+  msg.textContent = r.msg;
+  msg.className = r.ok ? '' : 'bad';
+  if (r.ok) {
+    audio.tone(120, 0.6, 0.15);
+    hud.toast(r.msg, true);
+    closePower();
+  }
+});
+powerEl.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  closePower();
+});
+
+/** Biển HÀNG LỖI / CẦN QUÉT trên nóc kệ cho đoạn kệ còn việc được giao. */
+let jobFlagT = 0;
+function updateJobFlags(): void {
+  if (!game || !world) return;
+  const d = new Set<string>();
+  const sc = new Set<string>();
+  for (const j of game.shift.jobs) {
+    if (j.done) continue;
+    if (j.kind === 'scan') sc.add(j.target);
+    if (j.kind === 'defect') {
+      const sl = slotByKey(j.target);
+      if (sl && game.shift.defects.has(j.target)) d.add(sl.section);
+    }
+  }
+  for (const o of game.shift.openOrders) if (o.kind === 'rescan' && o.section) sc.add(o.section);
+  world.setJobFlags(d, sc);
+}
+
+/** Túi rác xách tay (tối đa 2), góc dưới bên phải màn hình. */
+function buildHandBags(): void {
+  handBags.clear();
+  for (let i = 0; i < 2; i++) {
+    const b = models?.static('tui_rac') ?? new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), new THREE.MeshLambertMaterial({ color: 0x15181a }));
+    b.scale.setScalar(0.75);
+    b.position.set(0.32 - i * 0.62, -0.62, -0.55);
+    b.rotation.set(0.2, i ? 0.8 : -0.5, 0);
+    b.traverse((o) => (o.castShadow = false));
+    b.visible = false;
+    handBags.add(b);
+  }
+}
+
+/** Thể lực, đau bụng, chóng mặt (mờ hình, chao đảo). */
+let dizzyPhase = 0;
+function updateBody(dt: number): void {
+  if (!game) return;
+  heldItem?.update(dt);
+  const pl = game.player;
+  hud.stamina(pl.stamina, pl.exhausted);
+  const dz = mode === 'play' ? Math.min(1, pl.dizzy / 6) : 0;
+  hud.sickness(mode === 'play' && pl.sick > 0, dz);
+  dizzyPhase += dt;
+  if (mode === 'play') camera.rotation.z = dz > 0 ? Math.sin(dizzyPhase * 1.3) * 0.06 * dz : 0;
+}
+
 function hintFor(f: Focus): string {
   if (!game) return '';
+  const hb = game.heldBulky;
+  if (hb) {
+    const duo = hb.carriers.length >= 2;
+    const where = inBox(hb.pos, inflate(PROMO_ZONE, 0.7)) ? '[E] Đặt kiện nước ở ĐẢO KHUYẾN MÃI' : 'Khiêng ra ĐẢO KHUYẾN MÃI (sát mặt kính)';
+    return `${where} · ${duo ? 'hai người khiêng' : 'kéo lê một mình: chậm, ồn'} · [G] buông`;
+  }
+  if (f?.kind === 'powerPanel') return game.power ? 'Tủ điện tổng · đang có điện' : '[E] Mở tủ điện: bật cầu dao theo sơ đồ';
+  if (f?.kind === 'trashBin') return game.shift.trashFull.has(f.id) ? `[E] Gom túi rác (${TRASH_BINS[f.id].name})` : 'Thùng rác đã gom';
+  if (f?.kind === 'dumpster') {
+    const n = game.player.bags + (game.heldCart?.kind === 'rac' ? game.heldCart.bags : 0);
+    return n ? `[E] Đổ ${n} túi rác` : 'THÙNG RÁC LỚN · gom túi rác trong siêu thị mang về đây';
+  }
+  const hc = game.heldCart;
+  if (hc) {
+    const load = hc.bulky !== null ? 'chở kiện nước' : hc.kind === 'hang' ? `${hc.boxes}/3 thùng` : `${hc.bags}/6 túi rác`;
+    if (hc.bulky !== null)
+      return inBox(hc.pos, inflate(PROMO_ZONE, 0.7)) ? '[E] Đặt kiện nước ở ĐẢO KHUYẾN MÃI' : `Đẩy xe ra ĐẢO KHUYẾN MÃI · ${load} · [G] buông`;
+    if (f?.kind === 'bulky') return hc.kind === 'hang' ? '[E] Chất kiện nước lên xe' : 'Xe rác không chở kiện hàng';
+    if (f?.kind === 'pile' && hc.kind === 'hang') return `[E] Chất thùng lên xe (${hc.boxes}/3)`;
+    if (f?.kind === 'shelf' && hc.boxes) return game.shift.restockNeeded.has(f.section.id) ? `[E] Xếp hàng từ xe vào ${f.section.name}` : 'Kệ này không thiếu hàng';
+    return `Đang đẩy ${hc.kind === 'hang' ? 'xe hàng' : 'xe rác'} · ${load} · [G] buông xe`;
+  }
+  if (f?.kind === 'cart') {
+    const c = game.shift.carts.find((x) => x.id === f.id)!;
+    return c.kind === 'hang' ? '[E] Đẩy XE ĐẨY HÀNG (chở kiện nước / 3 thùng)' : '[E] Đẩy XE GOM RÁC (gom tới 6 túi)';
+  }
+  if (game.player.bags) return `Đang xách ${game.player.bags} túi rác · đổ vào THÙNG RÁC LỚN trong kho`;
+  if (f?.kind === 'bulky') return player.carrying ? 'Kiện nước: thả thùng [G] trước' : '[E] Cầm một đầu kiện nước (2 người khiêng, hoặc chất lên XE ĐẨY HÀNG)';
   if (f?.kind === 'can') return '[E] Nhặt lại lon nước';
+  const hand = game.player.hand;
+  if (hand) {
+    const p = productById(hand.product)!;
+    if (f?.kind === 'defectBin') return `[E] Bỏ ${p.name} vào thùng HÀNG LỖI`;
+    if (f?.kind === 'shelf') return `[E] Đặt lại ${p.name} lên kệ`;
+    return '';
+  }
+  if (f?.kind === 'defectBin') return 'THÙNG HÀNG LỖI · cầm hàng lỗi trên kệ tới bỏ vào';
   const coldNeeded = f?.kind === 'cold' && game.shift.coldNeeded.has(f.unit.id);
   if (player.carryKind === 'cold') {
     if (f?.kind === 'cold') return coldNeeded ? `[E] Xếp hàng lạnh vào ${f.unit.name}` : `${f.unit.name} không hết hàng`;
@@ -461,8 +939,9 @@ function hintFor(f: Focus): string {
     return game.shift.freezerWindow() !== null ? '[E] Ghi nhiệt độ tủ đông' : 'Chưa đến giờ ghi nhiệt độ';
   if (f?.kind === 'shelf') {
     if (game.shift.restockNeeded.has(f.section.id)) return 'Kệ đang THIẾU HÀNG · lấy thùng ở kho xếp vào trước rồi mới quét';
-    if (game.shift.recount.has(f.section.id)) return '[Giữ F] Kiểm lại kệ (phiếu việc)';
-    return game.shift.scanned.has(f.section.id) ? '' : '[Giữ F] Quét kệ';
+    const take = f.slot ? `[E] Lấy ${productById(f.slot.product)!.name} · ` : '';
+    if (game.shift.recount.has(f.section.id)) return `${take}[Giữ F] Kiểm lại kệ (phiếu việc)`;
+    return game.shift.scanned.has(f.section.id) ? take.replace(/ · $/, '') : `${take}[Giữ F] Quét kệ`;
   }
   return '';
 }
@@ -473,12 +952,13 @@ function handleEvents(): void {
   for (const e of game.events) {
     switch (e.type) {
       case 'announce':
-        hud.announce(e.text);
+        if (subtitles) hud.announce(e.text);
         audio.speak(e.text);
         dev.log(`Loa: ${e.text}`);
         break;
       case 'power':
         dev.log(e.on ? 'Có điện lại' : 'MẤT ĐIỆN');
+        if (e.on && powerOpen) closePower();
         powerTarget = e.on ? 1 : 0;
         flickerT = e.on ? 0.8 : 1.4;
         if (!e.on) {
@@ -486,7 +966,7 @@ function handleEvents(): void {
           audio.click(p3(player.pos, 3), 0.8, 400);
           if (!flashTipShown) {
             flashTipShown = true;
-            hud.toast('MẤT ĐIỆN · [T] bật/tắt đèn pin. Ánh đèn rọi tới có thể khiến kiểm kê viên chạy tới.', false);
+            hud.toast('MẤT ĐIỆN · [T] đèn pin · tới PHÒNG ĐIỆN bật lại cầu dao theo sơ đồ. Ánh đèn có thể khiến kiểm kê viên chạy tới.', false);
           }
         } else {
           audio.tone(120, 0.5, 0.12);
@@ -515,7 +995,7 @@ function handleEvents(): void {
         audio.tone(2100, 0.04, 0.05, p3(e.at, 1.3), 'square');
         break;
       case 'eval':
-        dev.log(`Hết ca · ${e.ev.cong}/${e.ev.quota} công · +${e.ev.holesAdded} lỗ`);
+        dev.log(`Hết ca · việc ${e.ev.jobsDone}/${e.ev.jobsTotal} · ghi hồ sơ ${e.ev.records.length} · +${e.ev.holesAdded} lỗ`);
         dev.close(true);
         onEval(e.ev);
         break;
@@ -544,7 +1024,7 @@ function handleEvents(): void {
         setTimeout(() => audio.tone(e.late ? 330 : 1320, 0.12, 0.08), 120);
         hud.toast(
           e.late
-            ? `Chấm công vào ca TRỄ (${game.shift.clock()}) · 06:00 bị trừ 2 công`
+            ? `Chấm công vào ca TRỄ (${game.shift.clock()}) · bị ghi hồ sơ`
             : `Đã chấm công vào ca lúc ${game.shift.clock()} · bắt đầu làm việc`,
           !e.late,
         );
@@ -560,7 +1040,10 @@ function handleEvents(): void {
       case 'order': {
         const o = e.order;
         dev.log(`Phiếu việc mới: ${orderText(o)} · hạn ${clockOf(o.due)}`);
-        if (o.kind === 'restock' && o.section) world?.setNeeded(o.section);
+        if (o.kind === 'restock' && o.section) {
+          world?.setNeeded(o.section);
+          world?.syncShelf(game.shift, o.section);
+        }
         if (o.kind === 'rescan' && o.section) world?.setRecount(o.section, true);
         if (o.kind === 'coldRestock' && o.section) world?.setColdNeeded(o.section, true);
         world?.setPileCount(game.shift.pile);
@@ -583,6 +1066,39 @@ function handleEvents(): void {
         break;
       case 'noise':
         break;
+      case 'scrape':
+        // Kiện hàng lết trên sàn: ken két
+        audio.tone(170 + Math.random() * 60, 0.32, 0.09, p3(e.at, 0.1), 'sawtooth');
+        audio.click(p3(e.at, 0.1), 0.5, 500);
+        break;
+      case 'thud':
+        audio.tone(60, 0.4, 0.25, p3(e.at, 0.2), 'square');
+        audio.clank(p3(e.at, 0.2));
+        break;
+      case 'rattle':
+        // bánh xe đẩy lạch cạch (chở nặng thì kêu to hơn)
+        audio.click(p3(e.at, 0.15), 0.25 + Math.min(0.4, e.load * 0.06), 1100);
+        setTimeout(() => audio.click(p3(e.at, 0.15), 0.2, 1500), 140);
+        break;
+      case 'breaker':
+        if (e.ok) audio.click(p3(e.at, 1.3), 0.7, 2200);
+        else {
+          // chập điện: xèo xèo + nổ
+          audio.tone(90, 0.35, 0.3, p3(e.at, 1.3), 'square');
+          for (let i = 0; i < 6; i++) setTimeout(() => audio.click(p3(e.at, 1.3), 0.8, 5000), i * 45);
+          sparkPower();
+        }
+        break;
+      case 'trash':
+        audio.click(p3(e.at, 0.6), e.dumped ? 0.8 : 0.45, e.dumped ? 500 : 900);
+        if (e.dumped) audio.tone(70, 0.25, 0.12, p3(e.at, 0.6));
+        break;
+      case 'groan':
+        // Ọc ọc… ối…: tiếng trầm, ai đứng gần cũng nghe
+        audio.tone(95, 0.5, 0.22, p3(e.at, 1.2), 'sawtooth');
+        setTimeout(() => audio.tone(70, 0.6, 0.18, p3(e.at, 1.2), 'sawtooth'), 380);
+        hud.toast('Ọc ọc… ối… (đau bụng, rên thành tiếng)', false);
+        break;
     }
   }
   game.events.length = 0;
@@ -593,11 +1109,12 @@ function onEval(ev: Evaluation): void {
   mode = 'eval';
   sheetOpen = false;
   hud.sheet(game, false);
+  if (powerOpen) closePower();
   hud.scanner(null);
   hud.count(0);
   controls.unlock();
   hud.show('pause', false);
-  hud.badge(game.name, game.holes);
+  hud.badge(game.name, game.holes, game.records);
   hud.evaluation(game, ev, () => {
     hud.show('eval', false);
     if (!game || !world) return;
@@ -628,6 +1145,15 @@ function resetNightView(): void {
   player.setCarrying(false);
   player.setFlashlight(false);
   game.player.light = false;
+  heldItem?.set(null);
+  eatT = 0;
+  world.syncTrash(game.shift.trashFull);
+  world.syncCarts(game.shift.carts, null);
+  if (coworker?.isActive) {
+    coworker.setActive(false, player.pos, 0);
+    coworker.setActive(true, player.pos, PLAYER_SPAWN_YAW + Math.PI);
+  }
+  world.syncBulky(game.shift.bulky, null, false);
   hud.count(0);
   hud.orders(game);
 }
@@ -641,6 +1167,11 @@ function startDeath(reason: 'scan' | 'holes', slot: V2): void {
   if (!game || !world) return;
   mode = 'dying';
   dyingName = game.name;
+  heldItem?.set(null);
+  if (powerOpen) closePower();
+  game.releaseCart();
+  hud.item(null);
+  hud.sickness(false, 0);
   hud.count(0);
   hud.scanner(null);
   hud.hint('');
@@ -793,7 +1324,8 @@ function showFinal(): void {
   el.innerHTML = `
     <h4>Phiếu lương · Thử việc</h4><hr>
     <div class="row"><span>${game.name.toUpperCase()}</span><span>đã thanh toán</span></div>
-    <div class="row"><span>Số lỗ trên thẻ</span><span>${game.holes}/3</span></div><hr>
+    <div class="row"><span>Số lỗ trên thẻ</span><span>${game.holes}/3</span></div>
+    <div class="row"><span>Tổng lương ${game.wages.length} đêm</span><span>${formatPrice(game.wages.reduce((a, w) => a + w, 0))}</span></div><hr>
     <div><b>Ký hợp đồng chính thức 30 ngày?</b></div>
     <div class="sm">Lương gấp đôi.</div>`;
   hud.show('final', true);
@@ -821,12 +1353,33 @@ function frame(now: number): void {
   if (game && world && auditorView) {
     // Thời gian của thế giới (Người Kiểm Kê, đồng hồ ca) có thể tua nhanh trong bảng sự kiện
     const wdt = dt * devHost.timeScale;
-    if (mode === 'play' && controls.isLocked) {
-      const m = player.update(dt);
+    if (mode === 'play' && (controls.isLocked || powerOpen)) {
+      // Kiện hàng: vòng va chạm phía trước (kiện, và đồng nghiệp cầm đầu kia), kiện nằm trên sàn là vật cản
+      const hb = game.heldBulky;
+      const reach = BULKY_SIZE.len / 2 + 0.35;
+      const bodies: [number, number][] = hb ? [[reach - 0.3, 0.26], [reach + 0.3, 0.26]] : [];
+      if (hb && hb.carriers.length >= 2) bodies.push([reach * 2, 0.28]);
+      if (game.heldCart) bodies.push([CART_MOVE.reach - 0.25, 0.3], [CART_MOVE.reach + 0.25, 0.3]);
+      // Đang mở tủ điện: đứng yên (vẫn có thể bị phát hiện)
+      if (powerOpen) for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) player.keys.delete(k);
+      const m = player.update(dt, { canRun: game.canRun, speedMul: game.speedMul, maxSpeed: game.carrySpeed, bodies, extra: bulkySolids() });
+      if (powerOpen && !inBox(player.pos, POWER_ZONE)) closePower();
       game.player.pos = { ...player.pos };
-      game.reportMotion(dt, m.moving, m.running);
+      camera.getWorldDirection(tmpV);
+      game.player.yaw = Math.atan2(tmpV.x, tmpV.z);
+      game.player.sheet = sheetOpen;
+      game.reportMotion(dt, m.moving, m.running, m.sneaking);
+      if (sheetOpen) {
+        // Bìa kẹp nhún theo bước chân, lắc nhẹ khi chạy
+        if (m.moving) sheetBob += dt * (m.running ? 11 : m.sneaking ? 5 : 7.5);
+        const amp = m.moving ? (m.running ? 9 : 4) : 0;
+        const el = document.getElementById('sheet')!;
+        el.style.setProperty('--bob', `${(Math.abs(Math.sin(sheetBob)) * amp).toFixed(1)}px`);
+        el.style.setProperty('--sway', `${(Math.sin(sheetBob * 0.5) * amp * 0.25).toFixed(2)}deg`);
+      }
       const f = getFocus();
       updateScan(dt, f);
+      updateHand(dt);
       let hint = throwAim?.aiming ? 'Thả [Q] để ném lon tới vòng vàng · chuột phải: huỷ' : hintFor(f);
       if (!hint && !game.player.clockedIn) {
         hint = `Chấm công vào ca: tới MÁY CHẤM CÔNG trong KHO trước ${clockOf(game.eventCfg.clockInBy)}`;
@@ -839,16 +1392,20 @@ function frame(now: number): void {
       canCooldown = Math.max(0, canCooldown - dt);
       game.tick(wdt);
       hud.clock(game);
-      hud.badge(game.name, game.holes);
+      hud.badge(game.name, game.holes, game.records);
       if (sheetOpen && (sheetRefresh -= dt) <= 0) {
-        sheetRefresh = 0.4;
-        hud.sheet(game, true);
+        sheetRefresh = 0.25;
+        hud.sheet(game, true, player.pos, game.player.yaw);
+      }
+      if ((jobFlagT -= dt) <= 0) {
+        jobFlagT = 0.5;
+        updateJobFlags();
       }
     } else if (mode === 'play' && dev.isOpen && !dev.pauses) {
       // Bảng sự kiện mở nhưng không tạm dừng: thế giới vẫn chạy, người chơi đứng yên
       game.tick(wdt);
       hud.clock(game);
-      hud.badge(game.name, game.holes);
+      hud.badge(game.name, game.holes, game.records);
     } else if (mode === 'spectate' || mode === 'dying') {
       game.tick(wdt);
       if (mode === 'dying') updateDeath(dt);
@@ -856,6 +1413,8 @@ function frame(now: number): void {
     }
     handleEvents();
     world.setDrift(game.shift.drift);
+    updateBody(dt);
+    updateCoworker(dt);
     if (mode === 'play' && (ordersRefresh -= dt) <= 0) {
       ordersRefresh = 0.25;
       hud.orders(game);
@@ -869,7 +1428,7 @@ function frame(now: number): void {
     }
     const frozen = mode === 'play' && !controls.isLocked && (!dev.isOpen || dev.pauses);
     auditorView.update(game.auditor, frozen ? 0 : wdt, debug, game.power);
-    captureView?.update(game.auditor, frozen ? 0 : wdt);
+    captureView?.update(game.auditor, frozen ? 0 : wdt, auditorView.bone('than'));
     throwAim?.update(frozen ? 0 : dt);
     world.update(dt);
     if (debug) {
@@ -885,6 +1444,10 @@ function frame(now: number): void {
     }
     camera.getWorldDirection(tmpV);
     audio.listener(camera.position, tmpV);
+    if ((fpsT -= dt) <= 0) {
+      fpsT = 0.5;
+      document.getElementById('fps')!.textContent = `${Math.round(governor.fps)} FPS`;
+    }
     hud.tick(dt);
     renderer.render(world.scene, camera);
   }
@@ -895,7 +1458,7 @@ requestAnimationFrame(frame);
 // Chỉ khi chạy npm run dev: cho script kiểm tra tự động (chụp màn hình…) truy cập trạng thái game.
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__hd30 = {
-    camera, player, dev, devHost, get game() { return game; }, get auditorView() { return auditorView; }, get captureView() { return captureView; }, get throwAim() { return throwAim; },
+    camera, player, dev, devHost, get game() { return game; }, get auditorView() { return auditorView; }, get captureView() { return captureView; }, get throwAim() { return throwAim; }, get heldItem() { return heldItem; }, get coworker() { return coworker; }, openPower, hud, get world() { return world; },
     renderInfo: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: governor.ratio, programs: renderer.info.programs?.length }),
   };
 }

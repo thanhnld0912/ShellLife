@@ -1,11 +1,18 @@
 // Âm thanh tạm thời, tổng hợp bằng Web Audio (chưa cần file âm thanh).
 // Loa dùng giọng đọc tiếng Việt của trình duyệt nếu máy có; nếu không thì chỉ hiện chữ.
+// Kênh âm lượng: tổng → nhạc nền (music) · âm thanh trong game (sfx) · loa thông báo (giọng đọc). Chỉnh trong Cài đặt.
 
 export interface P3 { x: number; y: number; z: number }
 
 export class GameAudio {
   private ctx: AudioContext | null = null;
+  /** Đầu ra tổng; sfx: âm thanh trong game; musicBus: nhạc nền. */
+  private main!: GainNode;
   private master!: GainNode;
+  private musicBus!: GainNode;
+  private vol = { master: 0.85, music: 0.5, sfx: 0.9, announcer: 0.85 };
+  private musicMode: 'menu' | 'game' | 'off' = 'off';
+  private musicTimer = 0;
   private noiseBuf!: AudioBuffer;
   private vi: SpeechSynthesisVoice | null = null;
 
@@ -24,15 +31,97 @@ export class GameAudio {
     }
     const ctx = new AudioContext();
     this.ctx = ctx;
+    this.main = ctx.createGain();
+    this.main.connect(ctx.destination);
     this.master = ctx.createGain();
-    this.master.gain.value = 0.8;
-    this.master.connect(ctx.destination);
+    this.master.connect(this.main);
+    this.musicBus = ctx.createGain();
+    this.musicBus.connect(this.main);
+    this.applyVolumes();
     this.noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     this.startHum();
     this.pickVoice();
     if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => this.pickVoice();
+  }
+
+  /** Âm lượng 0..1: tổng, nhạc nền, âm thanh trong game, loa thông báo. */
+  setVolumes(v: { master: number; music: number; sfx: number; announcer: number }): void {
+    this.vol = { ...v };
+    this.applyVolumes();
+  }
+
+  private applyVolumes(): void {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.main.gain.setTargetAtTime(this.vol.master, t, 0.05);
+    this.master.gain.setTargetAtTime(0.85 * this.vol.sfx, t, 0.05);
+    this.musicBus.gain.setTargetAtTime((this.musicMode === 'menu' ? 0.32 : 0.14) * this.vol.music, t, 0.3);
+  }
+
+  /**
+   * Nhạc nền tổng hợp: menu là các hợp âm thứ trầm buồn, chậm; trong ca chỉ còn tiếng nền rất nhỏ, thỉnh thoảng một nốt
+   * chuông méo (không lấn tiếng bước chân của Người Kiểm Kê). 'off' tắt dần.
+   */
+  music(mode: 'menu' | 'game' | 'off'): void {
+    this.musicMode = mode;
+    if (!this.ctx) return;
+    this.applyVolumes();
+    window.clearTimeout(this.musicTimer);
+    if (mode === 'off') return;
+    const chords = mode === 'menu'
+      ? [[45, 52, 57, 60], [41, 48, 53, 57], [43, 50, 55, 58], [40, 47, 52, 56]]
+      : [[33, 40], [34, 41], [31, 38]];
+    let i = 0;
+    const step = () => {
+      if (this.musicMode !== mode || !this.ctx) return;
+      const ctx = this.ctx;
+      const dur = mode === 'menu' ? 7.5 : 14;
+      const t = ctx.currentTime;
+      for (const n of chords[i % chords.length]) {
+        const f = 440 * Math.pow(2, (n - 69) / 12);
+        for (const det of [-4, 4]) {
+          const o = ctx.createOscillator();
+          o.type = 'sawtooth';
+          o.frequency.value = f;
+          o.detune.value = det;
+          const lp = ctx.createBiquadFilter();
+          lp.type = 'lowpass';
+          lp.frequency.setValueAtTime(380, t);
+          lp.frequency.linearRampToValueAtTime(720, t + dur * 0.5);
+          lp.frequency.linearRampToValueAtTime(320, t + dur);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0, t);
+          g.gain.linearRampToValueAtTime(0.05, t + dur * 0.35);
+          g.gain.linearRampToValueAtTime(0, t + dur + 1.5);
+          o.connect(lp).connect(g).connect(this.musicBus);
+          o.start(t);
+          o.stop(t + dur + 1.6);
+        }
+      }
+      // nốt chuông lạc giọng (hộp nhạc cũ)
+      if (mode === 'menu' || Math.random() < 0.5) {
+        const notes = [69, 72, 76, 74, 71, 67];
+        const k = mode === 'menu' ? 3 : 1;
+        for (let j = 0; j < k; j++) {
+          const tt = t + 1.5 + j * 1.7 + Math.random() * 0.3;
+          const o = ctx.createOscillator();
+          o.type = 'triangle';
+          o.frequency.value = 440 * Math.pow(2, (notes[(i + j * 2) % notes.length] - 69) / 12) * (1 + (Math.random() - 0.5) * 0.012);
+          const g = ctx.createGain();
+          g.gain.setValueAtTime(0, tt);
+          g.gain.linearRampToValueAtTime(0.06, tt + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0008, tt + 2.6);
+          o.connect(g).connect(this.musicBus);
+          o.start(tt);
+          o.stop(tt + 2.7);
+        }
+      }
+      i++;
+      this.musicTimer = window.setTimeout(step, dur * 1000);
+    };
+    step();
   }
 
   private pickVoice(): void {
@@ -150,7 +239,7 @@ export class GameAudio {
     u.lang = this.vi.lang;
     u.rate = rate;
     u.pitch = 0.85;
-    u.volume = 0.85;
+    u.volume = Math.max(0, Math.min(1, this.vol.announcer * this.vol.master));
     speechSynthesis.speak(u);
     return true;
   }
