@@ -13,7 +13,7 @@
 //      │▌ ══════════   ┊ ══════════      ┊               ▐│  ▌ tủ mát cửa kính · ▐ ngăn mát mở · ▭ tủ đông nằm
 //      │▌ ══════════   ┊ ══════════      ┊ ▭▭▭       ■   ▐│
 //      │  ══════════   ┊ ══════════                         │
-//      │        ■             ■            ■      [QUẦY]    │
+//      │        ■    ▤▤▤▤     ■            ■ xx   [QUẦY]    │  ▤ kệ rau quả (thấp) · xx bãi xe đẩy
 // z=34 └═════════════ MẶT KÍNH + CỬA SẮT XẾP ═══════════════┘
 //      x=0                                                x=44
 
@@ -126,6 +126,16 @@ export const PALLETS: AABB[] = [
   rect(31.5, 32.3, 1.2, 1.0),
 ];
 
+/**
+ * Khu rau quả sát mặt kính (giữa lối vào): 4 kệ gỗ nghiêng bày sọt trái cây, rau củ.
+ * Cao ~1 m: chặn lối nhưng không che tầm nhìn. Mặt bày quay vào trong siêu thị (về phía bắc).
+ */
+export const PRODUCE_H = 1.0;
+export const PRODUCE_STANDS: AABB[] = [13.6, 15.6, 17.6, 19.6].map((x) => rect(x, 32.75, 1.8, 1.1));
+/** Bãi xe đẩy mua hàng (xếp lồng nhau) và chồng giỏ nhựa cạnh quầy. */
+export const CART_CORRAL: AABB = rect(34.3, 33.2, 2.6, 0.9);
+export const BASKET_STACK: AABB = rect(37.25, 33.3, 0.5, 0.4);
+
 // ---- Khu sau ----
 const KHO = roomByName('KHO').box;
 const COLD_ROOM = roomByName('KHO LẠNH').box;
@@ -138,6 +148,40 @@ export const STAFF_DOOR: V2 = { x: 1.6, z: 0 };
 export const TIME_CLOCK: V2 = { x: 3.5, z: 0.1 };
 /** Đứng trong vùng này là chấm công (vào ca lúc đầu đêm, điểm danh lúc 06:00). */
 export const CLOCK_ZONE: AABB = { minX: 2.2, maxX: 5.2, minZ: 0.1, maxZ: 2.4 };
+/** Thùng HÀNG LỖI trong kho, sát tường nam cạnh cửa: bỏ hàng hết hạn / phồng / mốc lấy từ kệ vào đây. */
+export const DEFECT_BIN: AABB = rect(5.2, 6.3, 0.8, 0.6);
+/** Kiện nước suối (2 người khiêng): dài 1,1 m, rộng 0,48 m, cao 0,38 m. */
+export const BULKY_SIZE = { len: 1.1, wid: 0.48, h: 0.38 };
+/** Chỗ máy in "giao" kiện hàng mới trong kho (góc tây nam kho, dọc theo trục z). Kiện thứ 2 trở đi xếp lệch sang đông. */
+export const BULKY_SPOT: V2 = { x: 2.6, z: 4.9 };
+/** ĐẢO KHUYẾN MÃI sát mặt kính (giữa quầy và khu rau quả): nơi đặt kiện hàng. Hai chỗ đặt nằm theo trục x. */
+export const PROMO_ZONE: AABB = rect(25.0, 32.6, 2.6, 1.2);
+export const PROMO_SLOTS: V2[] = [{ x: 24.42, z: 32.6 }, { x: 25.58, z: 32.6 }];
+/**
+ * Thùng rác rải trong siêu thị (mỗi đêm gom 1 lần): cạnh quầy, lối vào, hành lang bắc, góc tây, phòng nghỉ.
+ * Đổ túi rác vào THÙNG RÁC LỚN ở cửa sau trong kho.
+ */
+export const TRASH_BINS: { x: number; z: number; name: string }[] = [
+  { x: 41.6, z: 31.3, name: 'cạnh quầy' },
+  { x: 11.5, z: 33.3, name: 'lối vào (cạnh rau quả)' },
+  { x: 23.2, z: 7.5, name: 'hành lang bắc' },
+  { x: 0.6, z: 28.4, name: 'góc tây (cuối dãy tủ mát)' },
+  { x: 27.6, z: 6.4, name: 'phòng nghỉ' },
+];
+export const TRASH_BIN_R = 0.24;
+/** Thùng rác lớn sát tường tây trong kho, cạnh cửa nhân viên. */
+export const DUMPSTER: AABB = rect(0.8, 3.4, 1.3, 1.75);
+/** Chỗ để xe đẩy hàng (chở kiện / thùng) và xe gom rác trong kho đầu mỗi đêm: [vị trí, góc quay]. */
+export const CART_HOMES: { kind: 'hang' | 'rac'; x: number; z: number; yaw: number }[] = [
+  { kind: 'hang', x: 8.8, z: 1.6, yaw: -0.4 },
+  { kind: 'rac', x: 10.0, z: 6.0, yaw: -Math.PI / 2 },
+];
+/** Xe đẩy: rộng × dài (m). */
+export const CART_SIZE = { wid: 0.6, len: 0.95 };
+/** Tủ điện tổng trong PHÒNG ĐIỆN (sát tường bắc): sửa điện khi mất điện. Đứng trong POWER_ZONE mới thao tác được. */
+const POWER_ROOM = roomByName('PHÒNG ĐIỆN').box;
+export const POWER_PANEL: AABB = rect((POWER_ROOM.minX + POWER_ROOM.maxX) / 2, 0.25, 0.9, 0.3);
+export const POWER_ZONE: AABB = { minX: POWER_ROOM.minX + 0.3, maxX: POWER_ROOM.maxX - 0.3, minZ: 0.4, maxZ: 2.6 };
 /** Bàn làm việc trong văn phòng. */
 const OFFICE = roomByName('VĂN PHÒNG').box;
 export const OFFICE_DESK: AABB = rect((OFFICE.minX + OFFICE.maxX) / 2, 2.4, 1.4, 0.7);
@@ -159,11 +203,23 @@ export const SOLIDS_3D: [AABB, number][] = [
   [COUNTER, 1.05], [COOLERS, 2.1], [CHILLERS, 2.0],
   ...FREEZERS.map((f) => [f, 0.85] as [AABB, number]),
   ...PALLETS.map((p) => [p, PALLET_H] as [AABB, number]),
-  [BOX_PILE, 1.04], [COLD_PILE, 1.1], [OFFICE_DESK, 0.76], [BREAK_TABLE, 0.75],
+  ...PRODUCE_STANDS.map((p) => [p, PRODUCE_H] as [AABB, number]),
+  [CART_CORRAL, 1.0], [BASKET_STACK, 0.52],
+  [BOX_PILE, 1.04], [DEFECT_BIN, 0.8], [COLD_PILE, 1.1], [OFFICE_DESK, 0.76], [BREAK_TABLE, 0.75],
+  ...TRASH_BINS.map((b) => [rect(b.x, b.z, TRASH_BIN_R * 2, TRASH_BIN_R * 2), 0.8] as [AABB, number]),
+  [DUMPSTER, 1.25], [POWER_PANEL, 1.8],
   ...AUDIT_CABINETS.map((c) => [c, 1.9] as [AABB, number]),
 ];
-/** Vật cản di chuyển của người chơi. */
+/** Vật cản di chuyển (chung cho người chơi và Người Kiểm Kê). */
 export const SOLIDS: AABB[] = SOLIDS_3D.map(([b]) => b);
+/**
+ * Cửa PHÒNG KIỂM KÊ: luôn khoá với nhân viên (không vào trốn được); Người Kiểm Kê đi qua được (cửa tự mở cho nó).
+ * Chỉ chặn người chơi.
+ */
+const AUDIT_ROOM = roomByName('PHÒNG KIỂM KÊ');
+export const AUDIT_DOOR: AABB = wallZ(STORE.backZ, AUDIT_ROOM.door.x - AUDIT_ROOM.doorW / 2, AUDIT_ROOM.door.x + AUDIT_ROOM.doorW / 2);
+/** Vật cản của người chơi: SOLIDS + cửa phòng kiểm kê đang khoá. */
+export const PLAYER_SOLIDS: AABB[] = [...SOLIDS, AUDIT_DOOR];
 /** Vật che tầm nhìn và âm thanh (cao hơn đầu người; quầy, bàn và tủ đông nằm thì thấp). */
 export const OCCLUDERS: AABB[] = SOLIDS_3D.filter(([, h]) => h >= 1.8).map(([b]) => b);
 /** Vật cản đường đi của Người Kiểm Kê. */

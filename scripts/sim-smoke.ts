@@ -1,12 +1,15 @@
 // Kiểm tra nhanh logic game, không cần trình duyệt: npm run sim:test
-import { Game, LATE_IN_PENALTY, type Evaluation, type GameOptions } from '../src/sim/game.ts';
+import { Game, orderText, type Evaluation, type GameOptions } from '../src/sim/game.ts';
+import { EAT_RECORD_OVER, LITTER_FEE, WAGE_PER_NIGHT, jobCounts } from '../src/sim/shift.ts';
+import { shelfSlots, slotAt, slotByKey } from '../src/sim/shelfGoods.ts';
+import { productById } from '../src/sim/products.ts';
 import {
   Auditor, ROUTE_STYLES, beamReach, buildRoute, navStats, pathClear, planPath, hasLOS, tuningForNight,
 } from '../src/sim/auditor.ts';
 import { mulberry32 } from '../src/sim/rng.ts';
 import {
   AUDITOR_DOOR, AUDITOR_SPAWN, CLOCK_ZONE, COLD_UNITS, PLAYER_SPAWN, ROOMS, SECTIONS, SHELVES, STORE, inSafeRoom, roomAt, storageSlot,
-  storageStand,
+  storageStand, TRASH_BINS, PLAYER_SOLIDS, SOLIDS,
 } from '../src/sim/layout.ts';
 import type { V2 } from '../src/sim/geometry.ts';
 import { dist } from '../src/sim/geometry.ts';
@@ -71,7 +74,7 @@ check('Có 48 đoạn kệ (12 dãy, 2 khối)', SECTIONS.length === 48, String(
 const lane = (i: number) => (SHELVES[i].box.maxZ + SHELVES[i + 1].box.minZ) / 2;
 const targets = [
   { x: 10, z: lane(2) }, { x: 39.5, z: 30.9 }, { x: 2.3, z: 24 }, { x: 36, z: 16.25 },
-  { x: 36, z: 22.75 }, { x: 42.2, z: 15 }, { x: 14.5, z: 8.2 }, { x: 22, z: 31.0 }, { x: 15.25, z: 33.2 },
+  { x: 36, z: 22.75 }, { x: 42.2, z: 15 }, { x: 14.5, z: 8.2 }, { x: 22, z: 31.0 }, { x: 11.0, z: 33.2 }, { x: 16.6, z: 31.6 },
 ];
 for (const t of targets) {
   const p = planPath({ x: 2.3, z: 8.4 }, t);
@@ -114,14 +117,14 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 {
   const g = mkGame('Thử', 7);
   g.player.pos = { x: 6, z: 4.5 };
-  for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60); // đợi nó ra khỏi kho
+  for (let i = 0; i < 60 * 14; i++) g.tick(1 / 60); // đợi nó ra khỏi kho
   const before = g.auditor.state;
   g.noise({ x: g.auditor.pos.x + 4, z: g.auditor.pos.z }, 10, 2);
   check('Nghe tiếng động gần', g.auditor.state === 'alert', `${before} → ${g.auditor.state}`);
   for (let i = 0; i < 60 * 2; i++) g.tick(1 / 60);
   check('Chuyển sang đi điều tra', ['investigate', 'search', 'count'].includes(g.auditor.state), g.auditor.state);
   const far = mkGame('Thử', 8);
-  for (let i = 0; i < 60 * 12; i++) far.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) far.tick(1 / 60);
   far.noise({ x: 23, z: 23.5 }, 2, 0.5);
   check('Không nghe tiếng thì thầm ở xa', far.auditor.state !== 'alert', far.auditor.state);
 }
@@ -129,7 +132,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 // 6. Đứng trước tia quét thì bị đếm và đóng thùng
 {
   const g = mkGame('Thử', 3);
-  for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) g.tick(1 / 60);
   const a = g.auditor;
   g.player.pos = { x: a.pos.x + Math.sin(a.beam) * 2, z: a.pos.z + Math.cos(a.beam) * 2 };
   let counted = false;
@@ -142,29 +145,35 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Đếm đủ 2 giây thì đóng thùng', g.phase === 'dead', g.phase);
 }
 
-// 7. Chỉ tiêu: việc an toàn chỉ tính nửa
+// 7. Việc được giao: danh sách cụ thể (không còn công / chỉ tiêu)
 {
   const g = mkGame('Thử', 1);
-  g.shift.minutes = 60;
-  g.freezer();
-  g.shift.minutes = 180;
-  g.freezer();
-  g.shift.minutes = 300;
-  g.freezer();
-  g.shift.minutes = 420;
-  g.freezer();
-  check('Việc an toàn bị giới hạn ở nửa chỉ tiêu', g.shift.cong === g.shift.safeCap, `${g.shift.cong}/${g.shift.quota}`);
-  const full = SECTIONS.find((s) => !g.shift.restockNeeded.has(s.id))!;
-  const empty = SECTIONS.find((s) => g.shift.restockNeeded.has(s.id))!;
+  const s = g.shift;
+  const kinds = new Set(s.jobs.map((j) => j.kind));
+  check('Đầu ca có danh sách việc cụ thể (quét, xếp kệ, tủ lạnh, nhiệt độ, hàng lỗi, rác)',
+    ['scan', 'restock', 'coldRestock', 'freezer', 'defect', 'trash'].every((k) => kinds.has(k as never)), s.jobs.map((j) => j.kind).join(','));
+  check('Đêm 1 vừa sức: không quá 10 việc', s.jobs.length <= 10, String(s.jobs.length));
+  check('Mỗi việc ghi rõ chỗ làm', s.jobs.every((j) => g.jobLabel(j).length > 8), s.jobs.map((j) => g.jobLabel(j)).join(' | '));
+  s.minutes = 60;
+  const f1 = g.freezer();
+  check('Ghi nhiệt độ đúng mốc được giao thì xong việc', f1.ok && !!f1.job && s.jobs.some((j) => j.kind === 'freezer' && j.target === '60' && j.done));
+  s.minutes = 180;
+  const f2 = g.freezer();
+  check('Mốc không được giao: ghi được nhưng không tính là việc', f2.ok && !f2.job);
+  const scanJob = s.jobs.find((j) => j.kind === 'scan')!;
+  const empty = SECTIONS.find((x) => s.restockNeeded.has(x.id))!;
   check('Kệ thiếu hàng thì không quét được', !g.scanSection(empty.id).ok);
-  g.scanSection(full.id);
-  g.scanSection(full.id);
-  check('Không quét một kệ hai lần', g.shift.cong === g.shift.safeCap + 2, String(g.shift.cong));
-  g.restock(empty.id);
+  const sr = g.scanSection(scanJob.target);
+  check('Quét đúng đoạn kệ được giao thì xong việc', sr.ok && !!sr.job && scanJob.done, sr.msg);
+  check('Không quét một kệ hai lần', !g.scanSection(scanJob.target).ok);
+  check('Xếp kệ phải có thùng hàng khô', !g.restock(empty.id).ok);
+  g.takeBox();
+  const rr = g.restock(empty.id);
+  check('Xếp kệ thiếu hàng được giao thì xong việc', rr.ok && !!rr.job);
   check('Xếp hàng xong thì quét được', g.scanSection(empty.id).ok);
 }
 
-// 8. Hết ca: thiếu chỉ tiêu và vắng điểm danh thì bị 2 lỗ
+// 8. Hết ca: còn việc chưa xong và vắng điểm danh thì bị 2 lỗ
 {
   const g = mkGame('Thử', 5);
   g.player.pos = { x: 3, z: 3 }; // đứng trong kho, kiểm kê viên không vào kho
@@ -172,7 +181,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   g.tick(0.2);
   const ev = g.events.find((e) => e.type === 'eval');
   check('Hết ca thì có phiếu đánh giá', !!ev);
-  if (ev && ev.type === 'eval') check('Thiếu chỉ tiêu + vắng điểm danh = 2 lỗ', ev.ev.holesAdded === 2, String(ev.ev.holesAdded));
+  if (ev && ev.type === 'eval') check('Còn việc chưa xong + vắng điểm danh = 2 lỗ', ev.ev.holesAdded === 2, String(ev.ev.holesAdded));
 }
 
 // 6. Mất điện: nghe tiếng động thì CHẠY tới; ánh đèn pin trong tầm mắt làm nó chú ý
@@ -180,7 +189,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   const g = mkGame('Thử', 7);
   g.player.pos = { x: 6, z: 4.5 };
   check('Đêm 1 không mất điện', g.blackout === null);
-  for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) g.tick(1 / 60);
   g.events.length = 0;
   g.forceBlackout();
   g.tick(1 / 60);
@@ -238,7 +247,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Đêm 1 mặc định không mất điện', n1.blackout === null);
   // Mất điện nhiều lần: đêm 2 một lần, đêm 3 hai lần, đêm 4 ba lần; không chồng nhau, cách nhau >= 40 phút
   {
-    const g = mkGame('Thử', 21);
+    const g = mkGame('Thử', { seed: 21, events: { powerFix: false } }); // không ai sửa điện: tự có điện lại
     const counts: number[] = [];
     let spaced = true;
     for (let n = 2; n <= 5; n++) {
@@ -282,7 +291,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Tua tới giờ ghi nhiệt độ', n1.shift.freezerWindow() === 60, n1.shift.clock());
   n1.events.length = 0;
   n1.devGoNight(3);
-  check('Nhảy tới đêm 3', n1.night === 3 && n1.shift.quota === 10 && n1.events.some((e) => e.type === 'night'));
+  check('Nhảy tới đêm 3', n1.night === 3 && n1.shift.jobs.filter((j) => j.kind === 'scan').length === jobCounts(3).scan && n1.events.some((e) => e.type === 'night'));
   check('Đêm 3 dùng thông số đêm 3', Math.abs(n1.auditor.tune.speed - tuningForNight(3).speed) < 1e-9);
 
   n1.setTuning({ range: 4, countTime: 3 });
@@ -294,7 +303,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 
   // Không chết + tàng hình
   const nd = mkGame('Thử', 3);
-  for (let i = 0; i < 60 * 12; i++) nd.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) nd.tick(1 / 60);
   nd.dev.noDeath = true;
   const a = nd.auditor;
   nd.player.pos = { x: a.pos.x + Math.sin(a.beam) * 2, z: a.pos.z + Math.cos(a.beam) * 2 };
@@ -306,7 +315,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   }
   check('Không chết: bị đếm đủ vẫn sống', nd.phase === 'shift' && spared, nd.phase);
   const inv = mkGame('Thử', 3);
-  for (let i = 0; i < 60 * 12; i++) inv.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) inv.tick(1 / 60);
   inv.dev.invisible = true;
   const b = inv.auditor;
   inv.player.pos = { x: b.pos.x + Math.sin(b.beam) * 2, z: b.pos.z + Math.cos(b.beam) * 2 };
@@ -317,7 +326,7 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
 // 10. Cảnh đóng thùng: lao tới → nhét vào thùng → bê về kho → đặt xuống → đi tuần tiếp
 {
   const g = mkGame('Lan', 3);
-  for (let i = 0; i < 60 * 12; i++) g.tick(1 / 60);
+  for (let i = 0; i < 60 * 14; i++) g.tick(1 / 60);
   const a = g.auditor;
   // Đặt nó đứng ở làn giữa dãy 1 và 2, nhìn về phía đông; người chơi đứng xa 4 m trước tia quét
   a.pos = { x: 2.3, z: 12.5 };
@@ -360,17 +369,17 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Bắt người tiếp theo sẽ đặt ở ô sau', g.auditor.storeIndex === 2 && g.storedCount === 2);
 }
 
-// 11. Phiếu việc: đủ chỉ tiêu rồi ngồi chờ thì vẫn bị phạt
+// 11. Phiếu việc phát sinh: xong việc được giao rồi ngồi chờ thì vẫn bị ghi hồ sơ
 {
-  // Ngồi yên cả ca trong kho (kiểm kê viên không vào kho), chỉ tiêu được cộng cho đủ
+  // Ngồi yên cả ca ở máy chấm công (kiểm kê viên không vào kho), việc được giao coi như xong hết
   const g = mkGame('Thử', { seed: 21, events: { auditorStart: 999 } });
-  g.player.pos = { x: 3, z: 3 };
-  g.devAddCong(g.shift.quota);
+  g.player.pos = { x: 3.5, z: 1.2 };
+  g.devCompleteJobs();
   let issued = 0;
   let lateEv = 0;
   let maxDrift = 0;
   let ev: Evaluation | null = null;
-  for (let i = 0; i < 60 * 280 && !ev; i++) {
+  for (let i = 0; i < 60 * 420 && !ev; i++) {
     g.tick(1 / 60);
     maxDrift = Math.max(maxDrift, g.shift.drift);
     for (const e of g.events) {
@@ -380,41 +389,57 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
     }
     g.events.length = 0;
   }
-  check('Đêm 1 giao 4 phiếu việc trong ca', issued === 4, String(issued));
+  check('Đêm 1 giao 2 phiếu phát sinh trong ca (vừa sức)', issued === 2, String(issued));
   check('Bỏ mặc thì phiếu quá hạn', lateEv === issued, `${lateEv}/${issued}`);
-  check('Bỏ mặc thì sổ lệch nặng', maxDrift > 0.5, maxDrift.toFixed(2));
-  check('Đủ chỉ tiêu nhưng trễ phiếu vẫn bị bấm lỗ', !!ev && ev.late === 4 && ev.reasons.some((r) => r.includes('Trễ hạn')), ev?.reasons.join(' | '));
-  check('Sổ lệch thì Người Kiểm Kê nghe thính hơn', g.auditor.drift > 0.5);
+  check('Bỏ mặc thì sổ lệch', maxDrift > 0.25, maxDrift.toFixed(2));
+  check('Xong việc được giao nhưng trễ phiếu thì bị ghi hồ sơ (chưa đủ 3 lần thì chưa bấm lỗ)',
+    !!ev && ev.late === 2 && ev.records.length === 2 && ev.recordsTotal === 2 && ev.holesAdded === 0, ev ? `${ev.records.join(' | ')} · lỗ ${ev.holesAdded}` : '');
+  check('Sổ lệch thì Người Kiểm Kê nghe thính hơn', g.auditor.drift > 0.2);
+  // Đêm sau trễ thêm 1 phiếu: đủ 3 lần ghi = 1 lỗ
+  g.nextNight();
+  g.player.pos = { x: 3.5, z: 1.2 };
+  g.devCompleteJobs();
+  const o2 = g.issueOrder('rescan')!;
+  g.shift.minutes = o2.due + 1;
+  g.events.length = 0;
+  g.tick(0.01);
+  g.shift.minutes = 479.9;
+  g.tick(0.2);
+  const ev2 = g.events.find((e) => e.type === 'eval');
+  check('Đủ 3 lần ghi hồ sơ thì bấm 1 lỗ', ev2?.type === 'eval' && ev2.ev.recordHoles === 1 && ev2.ev.holesAdded === 1 && g.records === 0, ev2?.type === 'eval' ? ev2.ev.reasons.join(' | ') : '');
 }
 {
   // Làm phiếu đúng hạn
   const g = mkGame('Thử', { seed: 22, events: { ordersBase: 0, ordersPerNight: 0 } });
   const r = g.issueOrder('restock')!;
-  check('Phiếu xếp hàng: kệ thành thiếu hàng, thêm thùng', g.shift.restockNeeded.has(r.section!) && g.shift.pile === g.shift.restockTotal + 1 - 0);
+  check('Phiếu xếp hàng: kệ thành thiếu hàng, thêm thùng', g.shift.restockNeeded.has(r.section!) && g.shift.pile === jobCounts(1).restock + 2);
   g.shift.drift = 0.3;
+  g.takeBox();
   g.restock(r.section!);
   check('Xếp hàng xong thì phiếu xong, sổ bớt lệch', r.done && !r.late && g.shift.drift < 0.3, g.shift.drift.toFixed(2));
   const sec = SECTIONS.find((s) => !g.shift.restockNeeded.has(s.id))!;
   g.scanSection(sec.id);
   const rs = g.issueOrder('rescan')!;
   check('Phiếu kiểm lại: chọn kệ đã quét, quét lại được', rs.kind === 'rescan' && rs.section === sec.id && !g.shift.scanned.has(sec.id));
-  const before = g.shift.cong;
-  check('Kiểm lại xong được công', g.scanSection(sec.id).ok && rs.done && g.shift.cong === before + 2);
+  const rsr = g.scanSection(sec.id);
+  check('Kiểm lại xong thì xong phiếu', rsr.ok && !!rsr.order && rs.done);
   const d = g.issueOrder('deliver')!;
-  check('Đơn gấp: giao ở quầy được 3 công', g.deliveryOpen && g.deliver().ok && d.done && !g.deliveryOpen);
+  check('Đơn gấp: phải mang thùng ra quầy', g.deliveryOpen && !g.deliver().ok);
+  g.takeBox();
+  check('Đơn gấp: giao ở quầy thì xong phiếu', g.deliver().ok && d.done && !g.deliveryOpen);
   check('Không có đơn thì không giao được', !g.deliver().ok);
 }
 {
-  // Phiếu khen: vượt 150% chỉ tiêu, xoá lỗ đêm sau
+  // Phiếu khen: xong hết việc, không trễ, không ghi hồ sơ, có mặt 06:00; xoá lỗ đêm sau
   const g = mkGame('Thử', { seed: 23, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
   g.player.pos = { x: 3.5, z: 1.2 }; // ở máy chấm công
-  g.devAddCong(9);
+  g.devCompleteJobs();
   g.shift.minutes = 479.9;
   g.tick(0.2);
   const e1 = g.events.find((e) => e.type === 'eval');
-  check('Vượt 150% chỉ tiêu thì nhận phiếu khen', e1?.type === 'eval' && e1.ev.voucherEarned && g.voucher);
+  check('Xong hết việc, không trễ thì nhận phiếu khen', e1?.type === 'eval' && e1.ev.voucherEarned && g.voucher);
   g.nextNight();
-  g.player.pos = { x: 3, z: 3 }; // vắng điểm danh, không đủ công: 2 lỗ, phiếu khen xoá 1
+  g.player.pos = { x: 3, z: 3 }; // vắng điểm danh, còn việc chưa xong: 2 lỗ, phiếu khen xoá 1
   g.shift.minutes = 479.9;
   g.events.length = 0;
   g.tick(0.2);
@@ -422,12 +447,12 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Phiếu khen xoá 1 lỗ', e2?.type === 'eval' && e2.ev.voucherUsed && e2.ev.holesAdded === 1 && !g.voucher, e2?.type === 'eval' ? String(e2.ev.holesAdded) : '');
 }
 
-// 12. Ném lon thì phải nhặt lại, không sẽ bị trừ công
+// 12. Ném lon thì phải nhặt lại, không sẽ bị trừ lương
 {
   const mk = () => {
     const g = mkGame('Thử', { seed: 31, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
     g.player.pos = { x: 3.5, z: 1.2 }; // đứng ở máy chấm công
-    g.devAddCong(g.shift.quota); // vừa đủ chỉ tiêu
+    g.devCompleteJobs();
     return g;
   };
   const endOf = (g: Game) => {
@@ -443,12 +468,12 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Ném lon: nằm trên sàn chờ nhặt', g.shift.litter.length === 2 && g.shift.stats.cans === 2);
   check('Nhặt lại được', g.pickUpLitter(a).ok && g.shift.litter.length === 1 && !g.pickUpLitter(a).ok);
   const ev = endOf(g);
-  check('Còn 1 lon: trừ 1 công, tụt dưới chỉ tiêu', !!ev && ev.litterPenalty === 1 && ev.cong === ev.quota - 1 && ev.holesAdded === 1, ev?.reasons.join(' | '));
+  check('Còn 1 lon: trừ phí dọn vào lương', !!ev && ev.litterFee === LITTER_FEE && ev.wage === WAGE_PER_NIGHT - LITTER_FEE && ev.holesAdded === 0, ev ? `${ev.wage}đ` : '');
   const clean = mk();
   const b = clean.dropLitter({ x: 10, z: 11 });
   clean.pickUpLitter(b);
   const ev2 = endOf(clean);
-  check('Nhặt hết thì không bị trừ', !!ev2 && ev2.litterPenalty === 0 && ev2.holesAdded === 0);
+  check('Nhặt hết thì không bị trừ', !!ev2 && ev2.litterFee === 0 && ev2.wage === WAGE_PER_NIGHT && ev2.holesAdded === 0);
   const d = mk();
   for (let i = 0; i < 5; i++) d.dropLitter({ x: 10 + i, z: 11 });
   d.player.pos = { x: 3, z: 3 };
@@ -456,31 +481,30 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   const ctl = mk();
   ctl.player.pos = { x: 3, z: 3 };
   for (let i = 0; i < 60 * 20; i++) ctl.tick(1 / 60);
-  check('Lon để lại chỉ bị trừ công, không làm lệch sổ', Math.abs(d.shift.drift - ctl.shift.drift) < 1e-9, `${d.shift.drift.toFixed(3)} = ${ctl.shift.drift.toFixed(3)}`);
+  check('Lon để lại chỉ bị trừ lương, không làm lệch sổ', Math.abs(d.shift.drift - ctl.shift.drift) < 1e-9, `${d.shift.drift.toFixed(3)} = ${ctl.shift.drift.toFixed(3)}`);
 }
 
 // 13. Xếp hàng vào tủ lạnh: thùng hàng lạnh lấy ở kho lạnh
 {
   const g = mkGame('Thử', { seed: 41, events: { ordersBase: 0, ordersPerNight: 0 } });
   const s = g.shift;
-  check('Đêm 1: 2 tủ lạnh hết hàng, 3 thùng hàng lạnh', s.coldNeeded.size === 2 && s.coldPile === 3, `${s.coldNeeded.size}, ${s.coldPile}`);
+  check('Đêm 1: 1 tủ lạnh hết hàng, 2 thùng hàng lạnh', s.coldNeeded.size === 1 && s.coldPile === 2, `${s.coldNeeded.size}, ${s.coldPile}`);
   const [unit] = [...s.coldNeeded];
   const shelf = [...s.restockNeeded][0];
   g.takeBox();
   check('Thùng hàng khô không bỏ vào tủ lạnh', !g.restockCold(unit).ok && s.coldNeeded.has(unit));
   g.dropBox();
-  check('Thả thùng khô thì trả về kho', g.player.carry === null && s.pile === s.restockTotal + 1);
+  check('Thả thùng khô thì trả về kho', g.player.carry === null && s.pile === jobCounts(1).restock + 1);
   g.takeColdBox();
   check('Thùng hàng lạnh không xếp lên kệ khô', !g.restock(shelf).ok && s.restockNeeded.has(shelf));
-  const before = s.cong;
   const r = g.restockCold(unit);
-  check('Xếp hàng lạnh vào tủ được 2 công', r.ok && s.cong === before + 2 && !s.coldNeeded.has(unit) && g.player.carry === null, r.msg);
+  check('Xếp hàng lạnh vào tủ được giao thì xong việc', r.ok && !!r.job && !s.coldNeeded.has(unit) && g.player.carry === null, r.msg);
   check('Tủ không hết hàng thì không xếp được', !g.restockCold(unit).ok);
   g.takeColdBox();
   g.dropBox();
-  check('Thả thùng lạnh thì trả về kho lạnh', s.coldPile === 2, String(s.coldPile));
+  check('Thả thùng lạnh thì trả về kho lạnh', s.coldPile === 1, String(s.coldPile));
   const o = g.issueOrder('coldRestock')!;
-  check('Phiếu "tủ lạnh hết hàng": tủ hết hàng, thêm thùng lạnh', o.kind === 'coldRestock' && s.coldNeeded.has(o.section!) && s.coldPile === 3);
+  check('Phiếu "tủ lạnh hết hàng": tủ hết hàng, thêm thùng lạnh', o.kind === 'coldRestock' && s.coldNeeded.has(o.section!) && s.coldPile === 2);
   g.takeColdBox();
   g.restockCold(o.section!);
   check('Xếp xong thì phiếu xong', o.done && !o.late);
@@ -531,11 +555,11 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   late.player.pos = { x: 3.5, z: 1.2 };
   late.tick(1 / 60);
   check('Chấm công sau hạn: ghi nhận trễ', late.player.clockedIn && late.player.lateIn);
-  late.devAddCong(late.shift.quota + LATE_IN_PENALTY);
+  late.devCompleteJobs();
   late.shift.minutes = 479.9;
   late.tick(0.2);
   const ev = late.events.find((e) => e.type === 'eval');
-  check(`Chấm công trễ: trừ ${LATE_IN_PENALTY} công lúc 06:00`, !!ev && ev.type === 'eval' && ev.ev.lateInPenalty === LATE_IN_PENALTY && ev.ev.cong === late.shift.cong - LATE_IN_PENALTY);
+  check('Chấm công trễ: bị ghi hồ sơ lúc 06:00', !!ev && ev.type === 'eval' && ev.ev.lateIn && ev.ev.records.some((t) => t.includes('trễ')), ev?.type === 'eval' ? ev.ev.records.join(' | ') : '');
   // Chạy kịp: từ phòng nghỉ tới máy chấm công
   const run = planPath(PLAYER_SPAWN, { x: 3.5, z: 1.2 });
   let len = 0;
@@ -546,6 +570,246 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   }
   const secs = len / 3.8;
   check('Chạy từ phòng nghỉ tới máy chấm công kịp hạn', secs < late.eventCfg.clockInBy * 0.5625, `${len.toFixed(1)} m · ${secs.toFixed(1)} giây chạy`);
+}
+
+// 16. Hàng trên kệ: lấy, đặt lại, ăn uống (trừ đúng giá tiền), hàng lỗi (đau bụng, chóng mặt, máy quét báo, thùng HÀNG LỖI), thể lực
+{
+  const slots = shelfSlots();
+  check('Hàng trên kệ: có hàng ở mọi đoạn kệ', SECTIONS.every((s) => slots.some((x) => x.section === s.id)), `${slots.length} món`);
+  const sl = slots[123];
+  const found = slotAt(sl.section, sl.x + 0.01, sl.y + 0.05);
+  check('Nhắm vào món hàng thì tìm đúng ô', found?.key === sl.key, `${sl.key} → ${found?.key}`);
+  check('Mọi món trên kệ đều có trong danh mục (giá, kích thước)', slots.every((x) => !!productById(x.product)));
+
+  const g = mkGame('Thử', { seed: 51, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  const s = g.shift;
+  check('Đêm 1 có 2 món hàng lỗi, đều nằm trong việc được giao', s.defects.size === 2 && s.defectsTotal === 2 && [...s.defects.keys()].every((k) => s.jobs.some((j) => j.kind === 'defect' && j.target === k)));
+  check('Hàng lỗi không nằm ở kệ đang thiếu hàng', [...s.defects.keys()].every((k) => !s.restockNeeded.has(slotByKey(k)!.section)));
+  const again = mkGame('Thử', { seed: 51, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  check('Cùng ca thì hàng lỗi cùng chỗ (không phụ thuộc máy)', [...again.shift.defects.keys()].join() === [...s.defects.keys()].join());
+
+  // Lấy một món tốt, đặt lại
+  const good = slots.find((x) => !s.defects.has(x.key) && !s.restockNeeded.has(x.section) && productById(x.product)!.kind === 'drink')!;
+  check('Lấy món trên kệ', g.takeItem(good.key).ok && g.player.hand?.key === good.key && !g.slotFilled(good.key));
+  check('Đang cầm thì không lấy thêm được', !g.takeItem(slots.find((x) => x.key !== good.key && g.slotFilled(x.key))!.key).ok);
+  check('Đang cầm hàng thì không lấy thùng được', !g.takeBox());
+  g.putBack();
+  check('Đặt lại thì kệ đầy lại', g.player.hand === null && g.slotFilled(good.key));
+
+  // Thể lực: chạy 15 giây thì cạn, không chạy được; uống một món thì hồi
+  for (let i = 0; i < 15 * 10; i++) g.reportMotion(0.1, true, true);
+  check('Chạy liên tục ~14 giây thì cạn thể lực', g.player.stamina === 0 && !g.canRun);
+  g.takeItem(good.key);
+  const drink = g.eat();
+  check('Uống một món: hồi thể lực, chạy lại được', drink.ok && g.player.stamina >= 0.3 && g.canRun, `thể lực ${g.player.stamina.toFixed(2)}`);
+  check('Món đã uống không còn trên kệ', !g.slotFilled(good.key));
+
+  // Không ăn được hoá phẩm
+  const other = slots.find((x) => productById(x.product)!.kind === 'other' && g.slotFilled(x.key) && !s.defects.has(x.key))!;
+  g.takeItem(other.key);
+  check('Hoá phẩm không ăn uống được', !g.eat().ok && g.player.hand?.key === other.key);
+  check('Hàng tốt không bỏ vào thùng HÀNG LỖI được', !g.discardHeld().ok);
+  g.putBack();
+
+  // Máy quét báo hàng lỗi khi quét đoạn kệ có hàng lỗi
+  const [k1, k2] = [...s.defects.keys()];
+  const sec1 = slotByKey(k1)!.section;
+  const scan = g.scanSection(sec1);
+  check('Quét đoạn kệ có hàng lỗi: máy quét báo', scan.ok && scan.defects === 1 && /BÍP LỖI/.test(scan.msg), scan.msg);
+
+  // Bỏ hàng lỗi vào thùng: xong việc
+  g.takeItem(k1);
+  check('Cầm lên thì biết là hàng lỗi', g.player.hand?.defect === s.defects.get(k1));
+  const dis = g.discardHeld();
+  check('Bỏ hàng lỗi vào thùng HÀNG LỖI: xong việc được giao', dis.ok && !!dis.job && s.defectsRemoved === 1 && !s.defects.has(k1));
+  check('Bìa kẹp ghi rõ món, đoạn kệ, tầng của hàng lỗi', /tầng \d/.test(g.jobLabel(s.jobs.find((j) => j.kind === 'defect' && j.target === k2)!)));
+
+  // Ăn phải hàng lỗi: đau bụng (chậm, rên), chóng mặt
+  const k2slot = slotByKey(k2)!;
+  if (productById(k2slot.product)!.kind === 'other') s.defects.set(good.key, 'het_han'); // đổi sang món ăn được nếu cần
+  const badKey = productById(k2slot.product)!.kind === 'other' ? good.key : k2;
+  if (badKey === good.key) s.taken.delete(good.key);
+  g.takeItem(badKey);
+  const bad = g.eat();
+  check('Ăn phải hàng lỗi: đau bụng, chóng mặt, đi chậm', !bad.ok && g.player.sick > 0 && g.player.dizzy > 0 && g.speedMul < 1, bad.msg);
+  g.events.length = 0;
+  for (let i = 0; i < 100; i++) g.reportMotion(0.1, true, false);
+  check('Đau bụng thì rên thành tiếng (gây tiếng động)', g.events.some((e) => e.type === 'groan') && g.events.some((e) => e.type === 'noise'));
+  for (let i = 0; i < 400; i++) g.reportMotion(0.1, true, false);
+  check('Hết đau bụng sau một lúc', g.player.sick === 0 && g.player.dizzy === 0 && g.speedMul === 1);
+
+  // Xếp hàng lại đoạn kệ: hàng mới, không còn chỗ trống
+  const emptySec = slotByKey(good.key)!.section;
+  s.restockNeeded.add(emptySec);
+  g.player.carry = 'dry';
+  g.restock(emptySec);
+  check('Xếp hàng lại đoạn kệ thì đầy lại', g.slotFilled(good.key));
+
+  // 06:00: trừ đúng giá tiền vào lương
+  const value = s.eaten.reduce((a, e) => a + e.price, 0);
+  s.minutes = 479.9;
+  g.tick(0.2);
+  const ev = g.events.find((e) => e.type === 'eval');
+  check(
+    'Ăn hàng: lúc 06:00 trừ lương đúng giá tiền',
+    !!ev && ev.type === 'eval' && ev.ev.eatenCount === s.eaten.length && ev.ev.eatenValue === value && ev.ev.wage === WAGE_PER_NIGHT - value,
+    ev && ev.type === 'eval' ? `${ev.ev.eatenCount} món · ${value}đ · lương ${ev.ev.wage}đ` : '',
+  );
+  check('Ăn chưa quá 100.000đ thì không bị ghi hồ sơ', !!ev && ev.type === 'eval' && (value > EAT_RECORD_OVER) === ev.ev.records.some((t) => t.includes('Ăn')));
+  check('Phiếu đánh giá ghi hàng lỗi còn trên kệ', !!ev && ev.type === 'eval' && ev.ev.defectsRemoved === 1 && ev.ev.defectsLeft === s.defects.size);
+}
+
+// 17. Kiện hàng cồng kềnh (2 người khiêng), đi rón rén, đang xem phiếu việc
+{
+  const g = mkGame('Thử', { seed: 77, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  const s = g.shift;
+  const o = g.issueOrder('bulky');
+  check('Phiếu khiêng kiện nước: có kiện nằm trong kho', !!o && s.bulky.length === 1 && inSafeRoom(s.bulky[0].pos), o ? orderText(o) : '');
+  const b = s.bulky[0];
+  check('Một mình cầm được một đầu', g.grabBulky(b.id).ok && g.player.bulky === b.id && b.carriers.length === 1);
+  check('Đang khiêng thì không lấy thùng được', !g.takeBox());
+  check('Một mình kéo lê: rất chậm, không chạy', g.bulkySpeed !== null && g.bulkySpeed <= 0.8 + 1e-9);
+  // Kéo lê một mình: ken két, Người Kiểm Kê nghe xa
+  g.player.pos = { x: 6, z: 5 };
+  g.player.yaw = Math.PI / 2;
+  g.events.length = 0;
+  for (let i = 0; i < 30; i++) g.reportMotion(0.1, true, false);
+  const soloNoise = g.events.filter((e) => e.type === 'noise').map((e) => (e.type === 'noise' ? e.radius : 0));
+  check('Kéo lê một mình: kêu ken két, nghe xa', g.events.some((e) => e.type === 'scrape') && soloNoise.length >= 3 && Math.max(...soloNoise) >= 9, `${soloNoise.length} lần · ${Math.max(...soloNoise)} m`);
+  check('Kiện đi theo trước mặt người khiêng', Math.abs(b.pos.x - (6 + 0.9)) < 1e-6 && Math.abs(b.pos.z - 5) < 1e-6, `${b.pos.x.toFixed(2)}, ${b.pos.z.toFixed(2)}`);
+  // Đi rón rén: kéo lê nhỏ tiếng hơn, chậm hơn
+  g.events.length = 0;
+  for (let i = 0; i < 30; i++) g.reportMotion(0.1, true, false, true);
+  const sneakNoise = g.events.filter((e) => e.type === 'noise').map((e) => (e.type === 'noise' ? e.radius : 0));
+  check('Đi rón rén (giữ C): kéo lê nhỏ tiếng hơn, chậm hơn', g.player.sneak && Math.max(...sneakNoise) < 9 && g.bulkySpeed! < 0.8);
+  // Người thứ hai cầm đầu kia
+  check('Người thứ hai cầm đầu kia', g.grabBulky(b.id, 'p2').ok && b.carriers.length === 2);
+  check('Không quá 2 người', !g.grabBulky(b.id, 'p3').ok);
+  check('Hai người khiêng: nhanh gấp đôi', g.bulkySpeed !== null && Math.abs(g.bulkySpeed - 1.6 * 0.7) < 1e-9, `${g.bulkySpeed}`);
+  g.events.length = 0;
+  for (let i = 0; i < 30; i++) g.reportMotion(0.1, true, false, false);
+  const duoNoise = g.events.filter((e) => e.type === 'noise').map((e) => (e.type === 'noise' ? e.radius : 0));
+  check('Hai người khiêng: êm (không ken két, tiếng nhỏ)', !g.events.some((e) => e.type === 'scrape') && duoNoise.every((r) => r <= 3));
+  // Đặt sai chỗ, buông, cầm lại, đặt đúng chỗ
+  check('Chưa tới ĐẢO KHUYẾN MÃI thì không đặt được', !g.placeBulky().ok);
+  g.releaseBulky('p2');
+  g.events.length = 0;
+  g.releaseBulky();
+  check('Buông hết tay: kiện rơi phịch (ồn), nằm lại chỗ đó', g.player.bulky === null && !b.carriers.length && g.events.some((e) => e.type === 'thud'));
+  g.grabBulky(b.id);
+  g.player.pos = { x: 24.4, z: 31.0 };
+  g.player.yaw = 0;
+  g.reportMotion(0.1, false, false);
+  const r = g.placeBulky();
+  check('Đặt kiện ở ĐẢO KHUYẾN MÃI: xong phiếu', r.ok && !!r.order && b.done && !!o?.done && g.player.bulky === null, r.msg);
+  check('Đang xem phiếu việc: lõi game biết (để gửi cho người chơi khác)', (() => { g.player.sheet = true; return g.player.sheet; })());
+}
+
+// 18. Gom rác, xe đẩy hàng / xe rác, sửa điện, cửa phòng kiểm kê, giãn cách việc nặng
+{
+  // Gom rác: xách tay tối đa 2 túi, xe rác gom hết một lượt, đổ vào thùng rác lớn là xong việc
+  const g = mkGame('Thử', { seed: 81, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  const s = g.shift;
+  check('Đầu ca mọi thùng rác đầy, có việc gom rác', s.trashFull.size === TRASH_BINS.length && s.jobs.some((j) => j.kind === 'trash'));
+  check('Xách tay túi rác 1', g.takeTrash(0).ok && g.player.bags === 1);
+  check('Xách tay túi rác 2', g.takeTrash(1).ok && g.player.bags === 2);
+  check('Xách tay tối đa 2 túi', !g.takeTrash(2).ok && s.trashFull.has(2));
+  check('Thùng đã gom thì không gom nữa', !g.takeTrash(0).ok);
+  check('Đang xách rác thì không lấy thùng hàng', !g.takeBox());
+  const d1 = g.dumpTrash();
+  check('Đổ 2 túi: chưa xong việc (còn thùng chưa gom)', d1.ok && !d1.job && g.player.bags === 0 && s.trashDumped === 2);
+  const rac = s.carts.find((c) => c.kind === 'rac')!;
+  check('Đẩy xe rác', g.grabCart(rac.id).ok && g.player.cart === rac.id);
+  for (const i of [2, 3, 4]) g.takeTrash(i);
+  check('Xe rác gom một lượt nhiều túi', rac.bags === 3 && s.trashFull.size === 0 && g.player.bags === 0);
+  check('Đẩy xe thì chậm hơn, không chạy', g.carrySpeed !== null && g.carrySpeed <= 2.0);
+  g.player.yaw = 0;
+  g.events.length = 0;
+  for (let i = 0; i < 30; i++) g.reportMotion(0.1, true, false);
+  check('Xe đẩy lạch cạch (gây tiếng động)', g.events.some((e) => e.type === 'rattle') && g.events.some((e) => e.type === 'noise'));
+  const d2 = g.dumpTrash();
+  check('Đổ hết túi rác: xong việc gom rác', d2.ok && !!d2.job && s.jobs.find((j) => j.kind === 'trash')!.done && rac.bags === 0, d2.msg);
+  g.releaseCart();
+  check('Buông xe thì xe nằm lại', g.player.cart === null && rac.pusher === null);
+
+  // Xe đẩy hàng: chở kiện nước một mình, chở 3 thùng xếp kệ
+  const h = mkGame('Thử', { seed: 82, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  const hs = h.shift;
+  const cart = hs.carts.find((c) => c.kind === 'hang')!;
+  const o = h.issueOrder('bulky')!;
+  const b = hs.bulky[0];
+  check('Đẩy xe hàng', h.grabCart(cart.id).ok);
+  check('Chất kiện nước lên xe', h.loadBulky(b.id).ok && cart.bulky === b.id && b.cart === cart.id);
+  check('Chở kiện bằng xe: một người cũng đi được, nhanh hơn kéo lê', h.carrySpeed !== null && h.carrySpeed > 0.8 && h.carrySpeed < 1.6, String(h.carrySpeed));
+  h.player.pos = { x: 25, z: 30.6 };
+  h.player.yaw = 0;
+  h.reportMotion(0.1, false, false);
+  check('Kiện đi theo xe', Math.abs(b.pos.z - cart.pos.z) < 1e-6 && Math.abs(b.pos.x - cart.pos.x) < 1e-6);
+  const pr = h.placeBulky();
+  check('Đặt kiện từ xe ở ĐẢO KHUYẾN MÃI: xong phiếu', pr.ok && b.done && o.done && cart.bulky === null, pr.msg);
+  const pile0 = hs.pile;
+  h.takeBox();
+  h.takeBox();
+  check('Chất thùng hàng khô lên xe', cart.boxes === 2 && hs.pile === pile0 - 2 && h.player.carry === null);
+  const sec = [...hs.restockNeeded][0];
+  const rr = h.restock(sec);
+  check('Xếp kệ bằng thùng trên xe', rr.ok && cart.boxes === 1 && !hs.restockNeeded.has(sec), rr.msg);
+  h.releaseCart();
+
+  // Sửa điện: bật cầu dao đúng thứ tự trên sơ đồ, sai thì tóe lửa (ồn) và làm lại
+  const p = mkGame('Thử', { seed: 83, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999, blackoutAuto: false } });
+  p.shift.minutes = 100;
+  p.devSetPower(false);
+  p.tick(0.01);
+  check('Mất điện: có sơ đồ cầu dao (thứ tự khác vị trí)', !p.power && !!p.breaker && p.breaker.order.length === 6 && p.breaker.slots.length === 6);
+  const bp = p.breaker!;
+  const wrong = bp.slots.findIndex((n) => n !== bp.order[0]);
+  p.events.length = 0;
+  const w = p.flipBreaker(wrong);
+  check('Bật sai thứ tự: tóe lửa, ồn, nhảy hết', !w.ok && bp.next === 0 && p.events.some((e) => e.type === 'breaker' && !e.ok) && p.events.some((e) => e.type === 'noise' && e.radius >= 10));
+  check('Chưa bật đủ thì cầu dao tổng nhảy lại', !p.mainSwitch().ok && !p.power);
+  for (const name of bp.order) p.flipBreaker(bp.slots.indexOf(name));
+  check('Bật đủ cầu dao nhánh đúng thứ tự', bp.next === 6 && bp.on.every(Boolean));
+  const ms = p.mainSwitch();
+  check('Gạt cầu dao tổng: có điện lại', ms.ok && p.power && p.breaker === null);
+  const po = mkGame('Thử', { seed: 84, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  po.devGoNight(2);
+  const bo = po.blackouts[0];
+  po.shift.minutes = bo.start + 0.5;
+  po.tick(0.01);
+  check('Mất điện theo lịch: giao phiếu sửa điện', !po.power && po.shift.orders.some((x) => x.kind === 'power'));
+  po.shift.minutes = bo.end + 5;
+  po.tick(0.01);
+  check('Không sửa thì vẫn tối sau giờ mất điện (phải tự sửa)', !po.power);
+  po.shift.minutes = bo.start + 2 * (bo.end - bo.start) + 1;
+  po.tick(0.01);
+  check('Lâu quá thì máy phát dự phòng chạy, phiếu sửa điện quá hạn', po.power && po.shift.orders.find((x) => x.kind === 'power')!.late);
+
+  // Cửa phòng kiểm kê khoá với người chơi, Người Kiểm Kê vẫn đi qua
+  const door = { x: ROOMS.find((r) => r.name === 'PHÒNG KIỂM KÊ')!.door.x, z: STORE.backZ };
+  check('Cửa PHÒNG KIỂM KÊ chặn người chơi', PLAYER_SOLIDS.some((bx) => door.x > bx.minX && door.x < bx.maxX && door.z >= bx.minZ && door.z <= bx.maxZ));
+  check('…nhưng không chặn Người Kiểm Kê', !SOLIDS.some((bx) => door.x > bx.minX && door.x < bx.maxX && door.z >= bx.minZ && door.z <= bx.maxZ));
+  const out = planPath(AUDITOR_SPAWN, { x: door.x, z: 10 });
+  check('Người Kiểm Kê đi ra khỏi phòng được', out.length > 0);
+
+  // Giãn cách việc nặng: không giao hai việc nặng sát nhau
+  const sp = mkGame('Thử', { seed: 85, events: { ordersBase: 0, ordersPerNight: 0, auditorStart: 999 } });
+  sp.devGoNight(3);
+  const heavyTimes: number[] = [];
+  for (let t = 40; t < 440; t += 5) {
+    sp.shift.minutes = t;
+    // gọi đúng đường chọn loại phiếu của lịch giao phiếu
+    const kind = (sp as unknown as { pickOrderKind(): string }).pickOrderKind();
+    if (kind !== 'rescan' && kind !== 'power') {
+      const oo = sp.issueOrder(kind as never);
+      if (oo) {
+        heavyTimes.push(t);
+        oo.done = true; // làm xong ngay để không chặn việc nặng kế tiếp
+      }
+    }
+  }
+  const gaps = heavyTimes.slice(1).map((t, i) => t - heavyTimes[i]);
+  check('Việc nặng được giao cách nhau ít nhất 70 phút', gaps.every((x) => x >= 70), heavyTimes.join(','));
 }
 
 console.log(failed ? `\n${failed} kiểm tra thất bại.` : '\nTất cả kiểm tra đều đạt.');

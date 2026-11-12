@@ -1,24 +1,60 @@
-import { COLD_UNITS, SECTIONS } from './layout.ts';
-import { shuffle } from './rng.ts';
+// Một ca làm việc (một đêm): danh sách việc được giao, phiếu việc phát sinh, hàng hoá trên kệ, rác, xe đẩy.
+// Không dùng Three.js (sau này chạy trên server).
 
-export type TaskKind = 'scan' | 'restock' | 'freezer' | 'deliver' | 'coldRestock';
+import { CART_HOMES, COLD_UNITS, SECTIONS, TRASH_BINS, sectionById } from './layout.ts';
+import { mulberry32, shuffle } from './rng.ts';
+import { hashStr, pickDefects, type DefectKind } from './shelfGoods.ts';
+import type { ProductId } from './products.ts';
 
-/** Số công của từng việc, và việc nào là "an toàn" (chỉ tính tối đa nửa chỉ tiêu). */
-export const CONG: Record<TaskKind, number> = { scan: 2, restock: 1, freezer: 1, deliver: 3, coldRestock: 2 };
-export const SAFE: Record<TaskKind, boolean> = { scan: false, restock: false, freezer: true, deliver: false, coldRestock: false };
+// ---- Việc được giao (phân công) ----
+// Không còn "công" và chỉ tiêu: đầu ca mỗi nhân viên nhận một DANH SÁCH VIỆC CỤ THỂ (quét đoạn kệ nào, xếp kệ nào,
+// ghi nhiệt độ mốc nào, dọn món hàng lỗi nào, gom rác). 06:00 còn việc chưa xong thì bị bấm 1 lỗ (tối đa 1 lỗ/đêm vì việc).
+// Sau này nhiều người: việc chia cho từng người (Job.who).
+
+/**
+ * scan: quét một đoạn kệ · restock: xếp hàng vào kệ THIẾU HÀNG · coldRestock: xếp hàng lạnh vào tủ HẾT HÀNG
+ * freezer: ghi nhiệt độ tủ đông đúng mốc giờ · defect: bỏ một món hàng lỗi vào thùng HÀNG LỖI · trash: gom rác cả siêu thị.
+ */
+export type JobKind = 'scan' | 'restock' | 'coldRestock' | 'freezer' | 'defect' | 'trash';
+
+export interface Job {
+  id: number;
+  kind: JobKind;
+  /** scan / restock: mã đoạn kệ · coldRestock: mã tủ · freezer: mốc giờ (phút) · defect: mã ô hàng · trash: 'all'. */
+  target: string;
+  /** Người được giao ('p1' = người chơi này). */
+  who: string;
+  done: boolean;
+}
+
+/** Lương một đêm thử việc (đồng). Ăn hàng, để lon nước trên sàn thì trừ vào đây. */
+export const WAGE_PER_NIGHT = 300000;
+/** Lon nước ném ra còn trên sàn lúc 06:00: phí dọn, trừ lương. */
+export const LITTER_FEE = 20000;
+/** Ăn hàng quá chừng này tiền trong một đêm thì bị ghi hồ sơ. */
+export const EAT_RECORD_OVER = 100000;
+/** Đủ chừng này lần ghi hồ sơ thì bấm 1 lỗ thẻ. */
+export const RECORDS_PER_HOLE = 3;
 
 // ---- Phiếu việc phát sinh trong ca ----
-// Chỉ tiêu chỉ là mức tối thiểu. Suốt ca máy in liên tục giao thêm phiếu việc có hạn giờ;
-// để trễ hạn thì bị ghi hồ sơ (bấm lỗ lúc 06:00) và sổ sách lệch đi (siêu thị tối dần).
+// Máy in ở quầy giao thêm phiếu có hạn giờ. Trễ hạn: GHI HỒ SƠ (3 lần ghi = 1 lỗ) và sổ sách lệch đi (siêu thị tối dần).
 
 /** restock: kệ vừa hết hàng · rescan: kệ đã quét phải kiểm lại · deliver: đơn gấp, mang 1 thùng từ kho ra quầy. */
 /** coldRestock: tủ lạnh vừa hết hàng (lấy thùng hàng lạnh ở kho lạnh). */
-export type OrderKind = 'restock' | 'rescan' | 'deliver' | 'coldRestock';
+/** bulky: khiêng kiện nước suối (~90 kg) từ kho ra ĐẢO KHUYẾN MÃI: 2 người khiêng, hoặc chở bằng xe đẩy hàng. */
+/** power: mất điện, bật lại cầu dao ở tủ điện tổng trong PHÒNG ĐIỆN. */
+export type OrderKind = 'restock' | 'rescan' | 'deliver' | 'coldRestock' | 'bulky' | 'power';
+
+/** Việc nặng (phải bê / khiêng / đẩy): giao cách nhau ít nhất HEAVY_GAP phút để người chơi không bị ngợp. */
+export const HEAVY_ORDERS = new Set<OrderKind>(['restock', 'coldRestock', 'deliver', 'bulky']);
+export const HEAVY_GAP = 70;
+/** Kiện hàng (việc nặng nhất) cách mọi việc nặng khác và lần mất điện ít nhất chừng này phút. */
+export const BULKY_GAP = 100;
 
 export interface Order {
   id: number;
   kind: OrderKind;
-  /** Đoạn kệ (restock, rescan). */
+  /** Đoạn kệ (restock, rescan) / mã tủ (coldRestock). */
   section?: string;
   /** Lúc giao và hạn chót (phút trong game tính từ 22:00). */
   issued: number;
@@ -27,17 +63,46 @@ export interface Order {
   late: boolean;
 }
 
-/** Hạn của từng loại phiếu (phút trong game; 1 phút ≈ 0,56 giây thật). */
-export const ORDER_DUE: Record<OrderKind, number> = { restock: 85, rescan: 70, deliver: 75, coldRestock: 95 };
+/** Hạn của từng loại phiếu (phút trong game). Việc nặng hạn dài hơn. */
+export const ORDER_DUE: Record<OrderKind, number> = { restock: 95, rescan: 70, deliver: 85, coldRestock: 105, bulky: 150, power: 60 };
+
+/** Kiện hàng cồng kềnh. pos: tâm kiện trên sàn · yaw: hướng chiều dài. */
+export interface Bulky {
+  id: number;
+  pos: { x: number; z: number };
+  yaw: number;
+  /** Ai đang khiêng ('p1' = người chơi này; sau này là mã người chơi trong mạng). Tối đa 2. */
+  carriers: string[];
+  /** Đang nằm trên xe đẩy hàng nào (null: không). */
+  cart: number | null;
+  /** Đã đặt ở ĐẢO KHUYẾN MÃI. */
+  done: boolean;
+}
+
+/** Xe đẩy: 'hang' chở kiện hàng hoặc tối đa 3 thùng hàng khô · 'rac' gom túi rác (tối đa 6 túi). */
+export interface Cart {
+  id: number;
+  kind: 'hang' | 'rac';
+  pos: { x: number; z: number };
+  yaw: number;
+  /** Ai đang đẩy (null: để yên). */
+  pusher: string | null;
+  bulky: number | null;
+  boxes: number;
+  bags: number;
+}
+export const CART_MAX_BOXES = 3;
+export const CART_MAX_BAGS = 6;
+/** Xách tay tối đa chừng này túi rác. */
+export const HAND_MAX_BAGS = 2;
 
 /**
  * Độ lệch sổ (0..1) tăng mỗi giây thật theo: số phiếu đang quá hạn, số đoạn kệ đang trống.
  * Tự giảm chậm khi không có gì bỏ dở; làm xong một phiếu thì giảm ngay một khoản.
  */
-export const DRIFT = { perLate: 0.012, perEmpty: 0.0008, decay: 0.004, onDone: 0.08 };
-
-/** Lon nước đã ném để dụ Người Kiểm Kê: phải nhặt lại. Lúc 06:00 mỗi lon còn trên sàn bị trừ chừng này công. */
-export const LITTER_PENALTY = 1;
+export const DRIFT = { perLate: 0.012, perEmpty: 0.0008, decay: 0.004, onDone: 0.08, perDefect: 0.0006 };
+/** Từ giờ này (phút, 02:00) hàng lỗi còn trên kệ bắt đầu làm lệch sổ. */
+export const DEFECT_DRIFT_FROM = 240;
 
 export interface Litter {
   id: number;
@@ -46,7 +111,8 @@ export interface Litter {
 }
 
 export const SHIFT_MINUTES = 480; // 22:00 → 06:00
-export const REAL_SECONDS_PER_SHIFT = 270; // ~4,5 phút ngoài đời
+/** Một ca ~6,5 phút ngoài đời (danh sách việc cụ thể cần đi khắp siêu thị). */
+export const REAL_SECONDS_PER_SHIFT = 390;
 export const REAL_PER_MIN = REAL_SECONDS_PER_SHIFT / SHIFT_MINUTES;
 
 /** Mốc ghi nhiệt độ tủ đông, tính bằng phút kể từ 22:00 (23:00, 01:00, 03:00, 05:00). */
@@ -61,6 +127,7 @@ export interface ShiftStats {
   seen: number;
   lightSpotted: number;
   drops: number;
+  sparks: number;
 }
 
 export function clockOf(minutes: number): string {
@@ -70,26 +137,33 @@ export function clockOf(minutes: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+/** Số lượng việc giao đầu ca theo đêm (1..5). */
+export function jobCounts(night: number) {
+  return {
+    scan: 2 + Math.floor(night / 2),
+    restock: 1 + Math.floor((night - 1) / 2),
+    cold: 1 + Math.floor((night - 1) / 2),
+    defects: 1 + Math.ceil(night / 2),
+    freezer: night <= 2 ? [60, 300] : night <= 4 ? [60, 180, 300] : [...FREEZER_TIMES],
+  };
+}
+
 export class Shift {
   night: number;
   minutes = 0;
-  quota: number;
-  safeCap: number;
-  earnedRisk = 0;
-  earnedSafe = 0;
+  /** Việc được giao đầu ca (danh sách cụ thể). */
+  jobs: Job[] = [];
   scanned = new Set<string>();
   restockNeeded = new Set<string>();
   restocked = new Set<string>();
-  restockTotal: number;
   freezerDone = new Set<number>();
   pile: number;
-  /** Tủ lạnh đang HẾT HÀNG (mã TM…, KM…, TD…), số đã xếp lại, tổng cần xếp trong ca. */
+  /** Tủ lạnh đang HẾT HÀNG (mã TM…, KM…, TD…), số đã xếp lại. */
   coldNeeded = new Set<string>();
   coldRestocked = new Set<string>();
-  coldTotal = 0;
   /** Thùng hàng lạnh còn trong kho lạnh. */
   coldPile = 0;
-  /** Phiếu việc đã giao trong ca (cả đã xong và quá hạn). */
+  /** Phiếu việc phát sinh đã giao trong ca (cả đã xong và quá hạn). */
   orders: Order[] = [];
   /** Lon nước đã ném còn nằm trên sàn. */
   litter: Litter[] = [];
@@ -99,30 +173,83 @@ export class Shift {
   recount = new Set<string>();
   /** Độ lệch sổ 0..1: càng cao siêu thị càng tối, Người Kiểm Kê càng thính. */
   drift = 0;
-  stats: ShiftStats = { heard: 0, cans: 0, idleSec: 0, runSec: 0, seen: 0, lightSpotted: 0, drops: 0 };
+  stats: ShiftStats = { heard: 0, cans: 0, idleSec: 0, runSec: 0, seen: 0, lightSpotted: 0, drops: 0, sparks: 0 };
+  /** Ô hàng đã bị lấy khỏi kệ (đang cầm hoặc đã ăn). Xếp hàng lại đoạn kệ đó thì đầy lại. */
+  taken = new Set<string>();
+  /** Hàng lỗi còn trên kệ (mã ô → kiểu lỗi), tổng đầu ca, số đã bỏ vào thùng HÀNG LỖI. */
+  defects: Map<string, DefectKind>;
+  defectsTotal: number;
+  defectsRemoved = 0;
+  /** Các món đã ăn / uống trong ca (trừ đúng giá tiền vào lương lúc 06:00). */
+  eaten: { product: ProductId; price: number; bad: boolean }[] = [];
+  /** Kiện hàng cồng kềnh trong ca (đang chờ trong kho, đang khiêng / chở, đã đặt). */
+  bulky: Bulky[] = [];
+  /** Thùng rác (chỉ số trong TRASH_BINS) còn đầy túi rác. */
+  trashFull: Set<number>;
+  /** Số túi rác đã đổ vào thùng rác lớn. */
+  trashDumped = 0;
+  /** Xe đẩy hàng và xe gom rác (về chỗ cũ trong kho mỗi đêm). */
+  carts: Cart[];
 
   constructor(night: number, rng: () => number) {
     this.night = night;
-    this.quota = 6 + 2 * (night - 1);
-    this.safeCap = Math.floor(this.quota / 2);
-    const n = Math.min(3 + night, 8);
-    for (const id of shuffle(SECTIONS.map((s) => s.id), rng).slice(0, n)) this.restockNeeded.add(id);
-    this.restockTotal = n;
-    this.pile = n + 1;
-    // Tủ lạnh hết hàng đầu ca: đêm 1 có 2 tủ, mỗi đêm thêm 1 (tối đa 6). Thùng hàng lạnh dư 1.
-    const c = Math.min(1 + night, 6);
-    for (const id of shuffle(COLD_UNITS.map((u) => u.id), rng).slice(0, c)) this.coldNeeded.add(id);
-    this.coldTotal = c;
-    this.coldPile = c + 1;
+    const k = jobCounts(night);
+    for (const id of shuffle(SECTIONS.map((s) => s.id), rng).slice(0, k.restock)) this.restockNeeded.add(id);
+    this.pile = k.restock + 1;
+    for (const id of shuffle(COLD_UNITS.map((u) => u.id), rng).slice(0, k.cold)) this.coldNeeded.add(id);
+    this.coldPile = k.cold + 1;
+    // Hàng lỗi và các đoạn kệ phải quét: bộ ngẫu nhiên riêng (không làm lệch phần khác của game)
+    const drng = mulberry32(hashStr(`loi/${night}/${[...this.restockNeeded].join(',')}`));
+    this.defects = pickDefects(k.defects, drng, this.restockNeeded);
+    this.defectsTotal = this.defects.size;
+    // Quét: mỗi đoạn ở một dãy khác nhau (rải khắp siêu thị), không trùng kệ đang thiếu hàng
+    const rows = new Set<number>();
+    const scans: string[] = [];
+    for (const s of shuffle(SECTIONS.filter((x) => !this.restockNeeded.has(x.id)), drng)) {
+      if (scans.length >= k.scan) break;
+      if (rows.has(s.row)) continue;
+      rows.add(s.row);
+      scans.push(s.id);
+    }
+    this.trashFull = new Set(TRASH_BINS.map((_, i) => i));
+    this.carts = CART_HOMES.map((h, i) => ({ id: i + 1, kind: h.kind, pos: { x: h.x, z: h.z }, yaw: h.yaw, pusher: null, bulky: null, boxes: 0, bags: 0 }));
+
+    let id = 1;
+    const add = (kind: JobKind, target: string) => this.jobs.push({ id: id++, kind, target, who: 'p1', done: false });
+    for (const s of scans) add('scan', s);
+    for (const s of this.restockNeeded) add('restock', s);
+    for (const u of this.coldNeeded) add('coldRestock', u);
+    for (const t of k.freezer) add('freezer', String(t));
+    for (const key of this.defects.keys()) add('defect', key);
+    add('trash', 'all');
   }
 
-  /** Công được tính: việc rủi ro tính đủ, việc an toàn tính tối đa safeCap. */
-  get cong(): number {
-    return this.earnedRisk + Math.min(this.earnedSafe, this.safeCap);
+  /** Đánh dấu xong việc được giao khớp (kind, target). Trả về việc vừa xong (null nếu không có trong danh sách). */
+  completeJob(kind: JobKind, target: string): Job | null {
+    const j = this.jobs.find((x) => x.kind === kind && x.target === target && !x.done);
+    if (!j) return null;
+    j.done = true;
+    return j;
   }
 
-  get safeFull(): boolean {
-    return this.earnedSafe >= this.safeCap;
+  get jobsDone(): number {
+    return this.jobs.filter((j) => j.done).length;
+  }
+
+  get jobsLeft(): Job[] {
+    return this.jobs.filter((j) => !j.done);
+  }
+
+  /** Túi rác tổng trong đêm (mỗi thùng một túi). */
+  get trashTotal(): number {
+    return TRASH_BINS.length;
+  }
+
+  /** Bỏ mọi dấu vết lấy hàng / hàng lỗi của một đoạn kệ (kệ được xếp hàng mới hoặc bị bán hết). */
+  clearSectionGoods(sectionId: string): void {
+    const pre = sectionId + ':';
+    for (const k of [...this.taken]) if (k.startsWith(pre)) this.taken.delete(k);
+    for (const k of [...this.defects.keys()]) if (k.startsWith(pre)) this.defects.delete(k);
   }
 
   clock(): string {
@@ -143,8 +270,35 @@ export class Shift {
     return null;
   }
 
+  /** Mốc ghi nhiệt độ được giao kế tiếp còn kịp làm. */
   nextFreezer(): number | null {
-    for (const t of FREEZER_TIMES) if (this.minutes < t + FREEZER_WINDOW && !this.freezerDone.has(t)) return t;
+    for (const j of this.jobs) {
+      if (j.kind !== 'freezer' || j.done) continue;
+      const t = Number(j.target);
+      if (this.minutes < t + FREEZER_WINDOW) return t;
+    }
     return null;
+  }
+}
+
+/** Mô tả một việc được giao (để hiện chữ trên bìa kẹp). */
+export function jobText(j: Job, defectSlot?: { section: string; tier: number; productName: string }): string {
+  switch (j.kind) {
+    case 'scan':
+      return `Quét ${sectionById(j.target)?.name ?? j.target}`;
+    case 'restock':
+      return `Xếp hàng ${sectionById(j.target)?.name ?? j.target} (thùng ở KHO)`;
+    case 'coldRestock': {
+      const u = COLD_UNITS.find((c) => c.id === j.target);
+      return `Xếp hàng lạnh vào ${u?.name ?? j.target} (thùng xốp ở KHO LẠNH)`;
+    }
+    case 'freezer':
+      return `Ghi nhiệt độ tủ đông lúc ${clockOf(Number(j.target))} (KHO LẠNH)`;
+    case 'defect':
+      return defectSlot
+        ? `Hàng lỗi: ${defectSlot.productName} · ${sectionById(defectSlot.section)?.name ?? ''} · tầng ${defectSlot.tier + 1}`
+        : 'Dọn một món hàng lỗi';
+    case 'trash':
+      return 'Gom rác các thùng trong siêu thị, đổ vào THÙNG RÁC LỚN (KHO)';
   }
 }
