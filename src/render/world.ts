@@ -4,16 +4,23 @@ import * as THREE from 'three';
 import type { AABB, V2 } from '../sim/geometry.ts';
 import {
   AUDIT_CABINETS, BOX_PILE, BREAK_TABLE, CHILLERS, COLD_PILE, COLD_UNITS, COOLERS, COUNTER, FREEZER_PANEL, GLASS, LIGHT_TUBES,
-  OFFICE_DESK, PALLETS, PALLET_H, ROOMS, SECTIONS, SHELF_HEIGHT, SHELF_MODULE, SHELVES, STAFF_DOOR, STORE, TIME_CLOCK, WALLS,
-  roomByName, sectionById, storageSlot,
+  DEFECT_BIN, OFFICE_DESK, PALLETS, PALLET_H, PRODUCE_H, PRODUCE_STANDS, CART_CORRAL, BASKET_STACK, ROOMS, SECTIONS, SHELF_HEIGHT, SHELF_MODULE, SHELVES, STAFF_DOOR, STORE, TIME_CLOCK, WALLS,
+  roomByName, sectionById, storageSlot, BULKY_SIZE, BULKY_SPOT, PROMO_ZONE, TRASH_BINS, DUMPSTER, POWER_PANEL, AUDIT_DOOR,
 } from '../sim/layout.ts';
+import type { Bulky, Cart } from '../sim/shift.ts';
 import { labelPlane, labelSign } from './labels.ts';
 import { playClip, type ModelInstance, type ModelLib, type ModelName } from './models.ts';
+import { buildPriceTags, type TagPlacement } from './priceTags.ts';
+import { aisleOf } from '../sim/products.ts';
+import { TIER_TOPS, shelfSlots, slotByKey, tierProduct, type DefectKind, type ShelfSlot } from '../sim/shelfGoods.ts';
 import { QUALITY, type QualitySettings } from './quality.ts';
 
 /** Hàng tồn đầu đêm (Shift thoả kiểu này). */
 export interface NightStock {
   restockNeeded: Set<string>;
+  /** Ô hàng đã bị lấy khỏi kệ, hàng lỗi còn trên kệ (xem shelfGoods.ts). */
+  taken: Set<string>;
+  defects: Map<string, DefectKind>;
   pile: number;
   coldNeeded: Set<string>;
   coldPile: number;
@@ -35,6 +42,13 @@ export interface World {
   setNeeded(id: string): void;
   /** Treo / gỡ thẻ KIỂM LẠI. */
   setRecount(id: string, on: boolean): void;
+  /**
+   * Vẽ lại hàng trên kệ theo ca: ô đã lấy thì trống, hàng lỗi thì méo / phồng / bạc màu / dán tem HẾT HẠN.
+   * section: chỉ vẽ lại một đoạn kệ (nhanh hơn).
+   */
+  syncShelf(s: NightStock, section?: string): void;
+  /** Kích thước (m) model một món hàng (để cầm trên tay). */
+  productSize(id: string): THREE.Vector3 | null;
   /** Độ lệch sổ 0..1: đèn khu bán hàng tắt dần, nhóm ngoài kính đứng sát hơn. */
   setDrift(d: number): void;
   /** Mã các tủ lạnh có hàng (TM1… tủ mát cửa kính, KM1… ngăn mát mở, TD1… tủ đông nằm). */
@@ -53,13 +67,29 @@ export interface World {
   blackoutLevel: number;
   /** Chạy chuyển động của model (nhóm ca trước ngoài kính…). */
   update(dt: number): void;
+  /**
+   * Vẽ các kiện hàng cồng kềnh theo ca (userData.kind = 'bulky', id). heldId: kiện người chơi đang cầm;
+   * duo: có người cầm đầu kia (khiêng ngang hông) hay kéo lê một mình (đầu kia lết trên sàn).
+   */
+  syncBulky(list: Bulky[], heldId: number | null, duo: boolean): void;
+  /** Xe đẩy hàng / xe gom rác (userData.kind = 'cart', id); heldId: xe người chơi đang đẩy (không nhắm trúng). */
+  syncCarts(list: Cart[], heldId: number | null): void;
+  /** Thùng rác còn túi rác (userData.kind = 'trashBin', id = chỉ số); thùng đã gom thì rỗng, tắt biển. */
+  syncTrash(full: Set<number>): void;
+  /**
+   * Biển báo nổi trên nóc kệ (nhìn thấy từ xa, qua nhiều dãy) cho các đoạn kệ có việc được giao:
+   * HÀNG LỖI (cam) và CẦN QUÉT (xanh). Truyền tập mã đoạn kệ còn việc.
+   */
+  setJobFlags(defectSecs: Set<string>, scanSecs: Set<string>): void;
+  /** Vị trí Người Kiểm Kê: cửa PHÒNG KIỂM KÊ (khoá với nhân viên) tự mở khi nó tới gần. */
+  setAuditorPos(p: V2): void;
 }
 
 const PALETTE = [0xd94b3d, 0xe8a33c, 0xf2d04b, 0x5fae5b, 0x3f88c5, 0x8e5bb5, 0xe9e4d4, 0x2f9c95, 0xc4426a, 0xf08a24];
 const BOARD_YS = [0.12, 0.56, 1.0, 1.44, 1.88];
 /** Mặt trên các tầng kệ trong model ke_hang.glb (tầng ở 0,16 m, dày 3 cm). */
 const MODEL_BOARD_TOPS = [0.175, 0.615, 1.055, 1.495, 1.935];
-const PRODUCTS: ModelName[] = ['hh_lon_nuoc', 'hh_hop_banh', 'hh_chai_nuoc', 'hh_goi_mi', 'hh_hop_sua'];
+
 const HIDDEN = new THREE.MeshBasicMaterial({ visible: false });
 
 function lambert(color: number, extra: THREE.MeshLambertMaterialParameters = {}): THREE.MeshLambertMaterial {
@@ -113,6 +143,8 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
   const mixers: THREE.AnimationMixer[] = [];
   /** Hàng trong từng tủ lạnh (mã tủ → các instance), để cho tủ hết hàng / xếp lại. */
   const coldItems = new Map<string, { im: THREE.InstancedMesh; i: number; m: THREE.Matrix4 }[]>();
+  /** Bảng giá (kệ + tủ lạnh), gộp thành một InstancedMesh sau khi bày hàng xong. */
+  const priceTags: TagPlacement[] = [];
   const rand = (() => {
     let s = 1234567;
     return () => ((s = (s * 16807) % 2147483647) / 2147483647);
@@ -273,7 +305,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     shelfHits.push(hit);
     // Biển tên dãy ở hai đầu kệ, quay ra hai làn dọc: đứng ở làn dọc nhìn vào thấy số các dãy cùng độ cao.
     for (const [x, ry] of [[row.x0 - 0.02, -Math.PI / 2], [row.x1 + 0.02, Math.PI / 2]] as const) {
-      const end = labelPlane([`DÃY ${row.id}`], 0.92, 0.4, { bg: '#1e2422', fg: '#f2c94c' });
+      const end = labelPlane([`DÃY ${row.id}`, aisleOf(row.id).name], 0.92, 0.4, { bg: '#1e2422', fg: '#f2c94c' });
       end.position.set(x, 2.38, row.zc);
       end.rotation.y = ry;
       add(end);
@@ -291,6 +323,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
 
   // Hàng trên kệ. Có model hàng hoá thì mỗi loại hàng một nhóm InstancedMesh; không thì khối màu.
   const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
+  const WHITE_C = new THREE.Color(1, 1, 1);
   /** Mỗi đoạn kệ: danh sách (InstancedMesh, chỉ số, ma trận khi có hàng). */
   const sectionItems = new Map<string, { im: THREE.InstancedMesh; i: number; m: THREE.Matrix4 }[]>();
   const pushItem = (section: string, im: THREE.InstancedMesh, i: number, m: THREE.Matrix4) => {
@@ -298,36 +331,54 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     if (!list) sectionItems.set(section, (list = []));
     list.push({ im, i, m });
   };
-  if (shelfModel && PRODUCTS.every(has)) {
-    const sizes = new Map(PRODUCTS.map((p) => [p, models!.size(p)!]));
-    const slots = new Map<ModelName, { section: string; m: THREE.Matrix4 }[]>(PRODUCTS.map((p) => [p, []]));
+  /**
+   * Mỗi ô hàng trên kệ (xem shelfGoods.ts): các phần InstancedMesh của món đó, ma trận đặt món (base)
+   * và ma trận phần trong model (local). Dùng để lấy / đặt lại từng món và tô hàng lỗi.
+   */
+  const slotItems = new Map<string, { im: THREE.InstancedMesh; i: number; base: THREE.Matrix4; local: THREE.Matrix4 }[]>();
+  const sectionKeys = new Map<string, string[]>();
+  const allSlots = shelfSlots();
+  const shelfGoods = [...new Set(allSlots.map((x) => x.product))].filter((id) => has(id as ModelName)) as ModelName[];
+  if (shelfModel && shelfGoods.length) {
     const q = new THREE.Quaternion();
+    const qBack = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
     const one = new THREE.Vector3(1, 1, 1);
+    // Bảng giá trên dải nẹp vàng của từng tầng, mỗi module kệ một bảng
     for (const sec of SECTIONS) {
       const row = SHELVES[sec.row - 1];
-      // Mặt trước của hàng quay ra lối đi
-      if (sec.out < 0) q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI);
-      else q.identity();
-      for (const y of MODEL_BOARD_TOPS) {
-        // Mỗi tầng của mỗi đoạn một loại hàng, xếp sát nhau thành dãy
-        const p = PRODUCTS[Math.floor(rand() * PRODUCTS.length)];
-        const sz = sizes.get(p)!;
-        const step = sz.x + 0.018;
-        const z = row.zc + sec.out * (0.43 - sz.z / 2);
-        for (let x = sec.x0 + 0.1 + step / 2; x < sec.x1 - 0.1; x += step) {
-          if (rand() < 0.05) continue; // chỗ trống lác đác cho thật
-          slots.get(p)!.push({ section: sec.id, m: new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q, one) });
+      const rq = sec.out < 0 ? qBack : q;
+      const mods = Math.round((sec.x1 - sec.x0) / SHELF_MODULE);
+      TIER_TOPS.forEach((y, tier) => {
+        const p = tierProduct(sec, tier).id;
+        for (let k = 0; k < mods; k++) {
+          const at = new THREE.Vector3(sec.x0 + SHELF_MODULE * (k + 0.5), y - 0.005, row.zc + sec.out * 0.479);
+          priceTags.push({ id: p, m: new THREE.Matrix4().compose(at, rq, one) });
         }
-      }
+      });
     }
-    for (const p of PRODUCTS) {
-      const list = slots.get(p)!;
-      const g = goodsMesh(p, list.map((s) => s.m));
+    const byProduct = new Map<ModelName, ShelfSlot[]>();
+    for (const sl of allSlots) {
+      if (!has(sl.product as ModelName)) continue;
+      if (!byProduct.has(sl.product as ModelName)) byProduct.set(sl.product as ModelName, []);
+      byProduct.get(sl.product as ModelName)!.push(sl);
+      if (!sectionKeys.has(sl.section)) sectionKeys.set(sl.section, []);
+      sectionKeys.get(sl.section)!.push(sl.key);
+    }
+    const white = new THREE.Color(1, 1, 1);
+    for (const [p, list] of byProduct) {
+      const mats = list.map((sl) => new THREE.Matrix4().compose(new THREE.Vector3(sl.x, sl.y, sl.z), sl.out < 0 ? qBack : q, one));
+      const g = goodsMesh(p, mats);
       if (!g) continue;
       add(g);
       for (const im of g.children as THREE.InstancedMesh[]) {
         const local = im.userData.local as THREE.Matrix4;
-        list.forEach((s, i) => pushItem(s.section, im, i, new THREE.Matrix4().multiplyMatrices(s.m, local)));
+        // Màu từng món (tô hàng lỗi): tạo sẵn màu trắng trước khung hình đầu tiên để khỏi phải dựng lại shader
+        for (let i = 0; i < list.length; i++) im.setColorAt(i, white);
+        list.forEach((sl, i) => {
+          pushItem(sl.section, im, i, new THREE.Matrix4().multiplyMatrices(mats[i], local));
+          if (!slotItems.has(sl.key)) slotItems.set(sl.key, []);
+          slotItems.get(sl.key)!.push({ im, i, base: mats[i], local });
+        });
       }
     }
   } else {
@@ -371,6 +422,87 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     touched.forEach((im) => (im.instanceMatrix.needsUpdate = true));
   };
 
+  // ---- Hàng lỗi trên kệ: nhìn kỹ mới thấy ----
+  // phong: phồng to, méo · het_han: nghiêng lệch, bạc màu, dán tem đỏ "HẾT HẠN" · moc: quay ngang, ngả xanh xám
+  const DEFECT_TINT: Record<DefectKind, THREE.Color> = {
+    phong: new THREE.Color(1.0, 0.93, 0.9),
+    het_han: new THREE.Color(0.78, 0.74, 0.66),
+    moc: new THREE.Color(0.52, 0.62, 0.42),
+  };
+  const defectXf = (kind: DefectKind, key: string) => {
+    const j = ((key.length * 7919) % 13) / 13 - 0.5; // lệch khác nhau từng món
+    const m = new THREE.Matrix4();
+    if (kind === 'phong') m.makeScale(1.14, 1.1, 1.3);
+    else if (kind === 'het_han') m.makeRotationZ(0.16 + 0.1 * j);
+    else m.makeRotationY(0.55 + 0.4 * j);
+    return m;
+  };
+  const stickerTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 32;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#e0302a';
+    g.fillRect(0, 0, 64, 32);
+    g.fillStyle = '#fff';
+    g.font = '800 13px Arial, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText('HẾT HẠN', 32, 11);
+    g.font = '600 10px Arial, sans-serif';
+    g.fillText('02/2019', 32, 24);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  })();
+  const stickers = new THREE.InstancedMesh(
+    new THREE.PlaneGeometry(0.06, 0.03),
+    new THREE.MeshLambertMaterial({ map: stickerTex, emissive: 0xffffff, emissiveMap: stickerTex, emissiveIntensity: 0.25 }),
+    24,
+  );
+  stickers.count = 0;
+  stickers.frustumCulled = false;
+  add(stickers);
+  const productSize = (id: string) => (has(id as ModelName) ? models!.size(id as ModelName) : null);
+  const tmpM = new THREE.Matrix4();
+  function syncShelf(st: NightStock, section?: string): void {
+    const keys = section ? sectionKeys.get(section) ?? [] : [...slotItems.keys()];
+    const touched = new Set<THREE.InstancedMesh>();
+    for (const key of keys) {
+      const parts = slotItems.get(key);
+      const sl = slotByKey(key);
+      if (!parts || !sl) continue;
+      const empty = st.restockNeeded.has(sl.section) || st.taken.has(key);
+      const kind = st.defects.get(key);
+      for (const it of parts) {
+        if (empty) it.im.setMatrixAt(it.i, ZERO);
+        else if (kind) it.im.setMatrixAt(it.i, tmpM.copy(it.base).multiply(defectXf(kind, key)).multiply(it.local));
+        else it.im.setMatrixAt(it.i, tmpM.multiplyMatrices(it.base, it.local));
+        it.im.setColorAt(it.i, kind && !empty ? DEFECT_TINT[kind] : WHITE_C);
+        touched.add(it.im);
+      }
+    }
+    touched.forEach((im) => {
+      im.instanceMatrix.needsUpdate = true;
+      if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    });
+    // Tem HẾT HẠN dán trên mặt trước món hàng
+    let n = 0;
+    for (const [key, kind] of st.defects) {
+      if (kind !== 'het_han' || n >= 24) continue;
+      const sl = slotByKey(key);
+      const parts = slotItems.get(key);
+      if (!sl || !parts || st.taken.has(key) || st.restockNeeded.has(sl.section)) continue;
+      const size = productSize(sl.product);
+      const h = size ? size.y : 0.15;
+      const d = size ? size.z : 0.07;
+      tmpM.copy(parts[0].base).multiply(defectXf(kind, key)).multiply(new THREE.Matrix4().makeTranslation(0, h * 0.62, d / 2 + 0.004));
+      stickers.setMatrixAt(n++, tmpM);
+    }
+    stickers.count = n;
+    stickers.instanceMatrix.needsUpdate = true;
+  }
+
   // Thẻ "THIẾU HÀNG" (đỏ) và "KIỂM LẠI" (vàng) treo trên mặt kệ
   const tags = new Map<string, THREE.Mesh>();
   const recountTags = new Map<string, THREE.Mesh>();
@@ -401,6 +533,10 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
   );
   cooler.userData = { kind: 'cooler' };
   buildColdSection();
+  {
+    const t = buildPriceTags(priceTags);
+    if (t) add(t);
+  }
   const coolerSign = labelPlane(['TỦ MÁT'], 1.4, 0.36, { bg: '#1e2422', fg: '#9fdcff' });
   coolerSign.position.set(1.15, 2.55, (COOLERS.minZ + COOLERS.maxZ) / 2);
   coolerSign.rotation.y = Math.PI / 2;
@@ -554,8 +690,14 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     }
 
     // Hàng bên trong
-    const goods: ModelName[] = ['hh_lon_nuoc', 'hh_chai_nuoc', 'hh_hop_sua', 'hh_sua_chua', 'hh_kem', 'hh_goi_dong'];
-    if (!goods.every(has)) return;
+    const base: ModelName[] = ['hh_lon_nuoc', 'hh_chai_nuoc', 'hh_hop_sua', 'hh_sua_chua', 'hh_kem', 'hh_goi_dong'];
+    if (!base.every(has)) return;
+    // Hàng thêm (có model thì bày): nước cam, sữa tươi, soda chanh, pizza đông lạnh
+    const goods: ModelName[] = [...base, ...(['hh_nuoc_cam', 'hh_sua_tuoi', 'hh_lon_xanh', 'hh_pizza', 'hh_tra_xanh', 'hh_ca_phe'] as ModelName[]).filter(has)];
+    const pick = (list: ModelName[]) => {
+      const ok = list.filter((p) => goods.includes(p));
+      return ok[Math.floor(rand() * ok.length)];
+    };
     const size = new Map(goods.map((g) => [g, models!.size(g)!]));
     const slots = new Map<ModelName, { unit: string; m: THREE.Matrix4 }[]>(goods.map((g) => [g, []]));
     const tmp = new THREE.Matrix4();
@@ -571,22 +713,27 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
         for (const z of zs) put(u.id, u.base, p, x, y, z);
       }
     };
+    /** Bảng giá nhỏ trên nẹp tầng tủ (toạ độ cục bộ của tủ, mặt trước +z). */
+    const tag = (base: THREE.Matrix4, p: ModelName, x: number, y: number, z: number) =>
+      priceTags.push({ id: p, m: base.clone().multiply(new THREE.Matrix4().makeTranslation(x, y, z)), scale: 0.72 });
     const TM_TANG = [0.215, 0.585, 0.955, 1.325, 1.695];
     const KM_TANG = [0.64, 0.99, 1.31, 1.63];
     for (const u of units) {
       if (u.kind === 'tu_mat') {
         // Nước ngọt, nước suối, sữa hộp: mỗi tầng một loại
         TM_TANG.forEach((y) => {
-          const p = (['hh_lon_nuoc', 'hh_chai_nuoc', 'hh_hop_sua'] as ModelName[])[Math.floor(rand() * 3)];
+          const p = pick(['hh_lon_nuoc', 'hh_chai_nuoc', 'hh_hop_sua', 'hh_nuoc_cam', 'hh_lon_xanh', 'hh_tra_xanh', 'hh_ca_phe']);
           row(u, p, y, -0.43, 0.43, [0.19, 0.04]);
+          for (const x of [-0.25, 0.25]) tag(u.base, p, x, y + 0.008, 0.279);
         });
       } else if (u.kind === 'ke_mat') {
         // Khay đáy: sữa chua; 3 kệ: sữa chua / sữa hộp / chai (kệ trên ngắn dần, hàng lùi vào trong)
         row(u, 'hh_sua_chua', KM_TANG[0], -0.56, 0.56, [0.17, 0.01]);
         KM_TANG.slice(1).forEach((y, i) => {
           const front = 0.135 - i * 0.04;
-          const p = (['hh_sua_chua', 'hh_hop_sua', 'hh_chai_nuoc'] as ModelName[])[Math.floor(rand() * 3)];
+          const p = pick(['hh_sua_chua', 'hh_hop_sua', 'hh_chai_nuoc', 'hh_sua_tuoi', 'hh_nuoc_cam']);
           row(u, p, y, -0.56, 0.56, [front - 0.08, front - 0.24]);
+          for (const x of [-0.35, 0.35]) tag(u.base, p, x, y + 0.012, 0.147 - i * 0.04);
         });
       } else {
         // Tủ đông (đáy lòng tủ cao 0,5 m): ngăn trái kem chồng 2 lớp, ngăn phải đồ đông lạnh nằm 3 lớp
@@ -599,11 +746,23 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
             }
           }
         }
-        for (let l = 0; l < 3; l++) {
-          for (let i = 0; i < 3; i++) {
-            for (let j = 0; j < 2; j++) {
-              if (l === 2 && rand() < 0.4) continue;
-              put(u.id, u.base, 'hh_goi_dong', 0.17 + i * 0.25 + (rand() - 0.5) * 0.03, TD_DAY + l * 0.047, -0.16 + j * 0.31, (rand() - 0.5) * 0.25);
+        if (goods.includes('hh_pizza') && rand() < 0.5) {
+          // Ngăn phải: hộp pizza nằm, 2×2 chồng 3 lớp
+          for (let l = 0; l < 3; l++) {
+            for (let i = 0; i < 2; i++) {
+              for (let j = 0; j < 2; j++) {
+                if (l === 2 && rand() < 0.4) continue;
+                put(u.id, u.base, 'hh_pizza', 0.25 + i * 0.36 + (rand() - 0.5) * 0.02, TD_DAY + l * 0.042, -0.17 + j * 0.34, (rand() - 0.5) * 0.12);
+              }
+            }
+          }
+        } else {
+          for (let l = 0; l < 3; l++) {
+            for (let i = 0; i < 3; i++) {
+              for (let j = 0; j < 2; j++) {
+                if (l === 2 && rand() < 0.4) continue;
+                put(u.id, u.base, 'hh_goi_dong', 0.17 + i * 0.25 + (rand() - 0.5) * 0.03, TD_DAY + l * 0.047, -0.16 + j * 0.31, (rand() - 0.5) * 0.25);
+              }
             }
           }
         }
@@ -721,13 +880,6 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     coldTags.set(id, t);
   };
 
-  // Xe đẩy để trong kho
-  const cart = models?.static('xe_day');
-  if (cart) {
-    cart.position.set(BOX_PILE.maxX + 1.3, 0, 1.6);
-    cart.rotation.y = -0.4;
-    add(cart);
-  }
   const pileSign = labelPlane(['HÀNG MỚI · MANG RA KỆ THIẾU HÀNG'], 2.4, 0.3, { bg: '#1e2422', fg: '#f2c94c' });
   pileSign.position.set((BOX_PILE.minX + BOX_PILE.maxX) / 2, 2.2, 0.13);
   add(pileSign);
@@ -781,10 +933,22 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     const b = ROOMS.find((r) => r.name === name)!.box;
     return { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2 };
   };
-  // Phòng điện: tủ điện
-  const breaker = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.2, 0.25), lambert(0x6b6f5a));
-  breaker.position.set(roomC('PHÒNG ĐIỆN').x, 1.4, 0.25);
-  add(breaker);
+  // Phòng điện: tủ điện tổng (sửa điện khi mất điện: bật cầu dao theo sơ đồ)
+  const pc = { x: (POWER_PANEL.minX + POWER_PANEL.maxX) / 2, z: (POWER_PANEL.minZ + POWER_PANEL.maxZ) / 2 };
+  const tuDien = models?.static('tu_dien');
+  if (tuDien) {
+    tuDien.position.set(pc.x, 0, pc.z);
+    add(tuDien);
+  } else {
+    add(boxFrom(POWER_PANEL, 0, 1.8, lambert(0x6b6f5a)));
+  }
+  const powerHit = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.9, 0.6), HIDDEN);
+  powerHit.position.set(pc.x, 0.95, pc.z + 0.2);
+  powerHit.userData = { kind: 'powerPanel' };
+  add(powerHit);
+  const powerSign = labelPlane(['TỦ ĐIỆN TỔNG', 'MẤT ĐIỆN: BẬT THEO SƠ ĐỒ'], 2.0, 0.42, { bg: '#f2c94c', fg: '#1e2422' });
+  powerSign.position.set(pc.x, 2.3, 0.12);
+  add(powerSign);
 
   // Phòng nghỉ: bàn, ghế nhựa, tủ khoá cá nhân và bảng phân ca (nhân viên bắt đầu ca ở đây)
   const table = add(boxFrom(BREAK_TABLE, 0, 0.75, lambert(0x6b5b4a)), true);
@@ -852,7 +1016,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
   const redLamp = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.08), lambert(0x3a0d0d, { emissive: 0xff2a1a, emissiveIntensity: 1.2 }));
   redLamp.position.set(audit.door.x, 2.98, STORE.backZ + 0.12);
   add(redLamp);
-  const auditSign = labelPlane(['PHÒNG KIỂM KÊ', 'KHÔNG PHẬN SỰ MIỄN VÀO'], 1.5, 0.42, { bg: '#2a0f0f', fg: '#ff8a7a' });
+  const auditSign = labelPlane(['PHÒNG KIỂM KÊ', 'KHÔNG PHẬN SỰ MIỄN VÀO'], 2.0, 0.5, { bg: '#2a0f0f', fg: '#ff8a7a' });
   auditSign.position.set(audit.door.x, 2.6, STORE.backZ + 0.13);
   add(auditSign);
 
@@ -895,6 +1059,312 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
       add(im);
     }
     raySolids.push(body);
+  }
+
+  // Khu rau quả sát mặt kính: kệ gỗ nghiêng bày sọt trái cây / rau củ, mặt bày quay vào trong (về phía bắc)
+  {
+    const kinds: ModelName[] = ['ke_rau_qua_1', 'ke_rau_qua_2', 'ke_rau_qua_3', 'ke_rau_qua_1'];
+    const byKind = new Map<ModelName, THREE.Matrix4[]>();
+    PRODUCE_STANDS.forEach((b, i) => {
+      const m = new THREE.Matrix4()
+        .makeTranslation((b.minX + b.maxX) / 2, 0, (b.minZ + b.maxZ) / 2)
+        .multiply(new THREE.Matrix4().makeRotationY(Math.PI));
+      const k = kinds[i % kinds.length];
+      if (has(k)) {
+        if (!byKind.has(k)) byKind.set(k, []);
+        byKind.get(k)!.push(m);
+      } else {
+        const fb = boxFrom(b, 0, PRODUCE_H * 0.85, lambert(0x8a6238));
+        fb.castShadow = fb.receiveShadow = true;
+        add(fb);
+      }
+    });
+    for (const [k, mats] of byKind) add(models!.instanced(k, mats)!);
+    const xs = PRODUCE_STANDS.map((b) => (b.minX + b.maxX) / 2);
+    const sign = labelSign(['RAU CỦ · TRÁI CÂY TƯƠI'], 2.6, 0.4, { bg: '#1f5a34', fg: '#f4ffe9' });
+    sign.position.set((Math.min(...xs) + Math.max(...xs)) / 2, 2.75, PRODUCE_STANDS[0].minZ + 0.3);
+    add(sign);
+    // Thảm cỏ nhựa dưới khu rau quả
+    const turf = new THREE.Mesh(
+      new THREE.PlaneGeometry(Math.max(...xs) - Math.min(...xs) + 2.4, 2.0),
+      lambert(0x3f7a3a),
+    );
+    turf.rotation.x = -Math.PI / 2;
+    turf.position.set((Math.min(...xs) + Math.max(...xs)) / 2, 0.004, PRODUCE_STANDS[0].minZ + 0.45);
+    turf.receiveShadow = true;
+    add(turf);
+  }
+  // Bãi xe đẩy mua hàng (4 xe lồng nhau) và chồng giỏ nhựa cạnh quầy
+  if (has('xe_mua_sam')) {
+    const mats: THREE.Matrix4[] = [];
+    for (let i = 0; i < 4; i++) {
+      mats.push(
+        new THREE.Matrix4()
+          .makeTranslation(CART_CORRAL.minX + 0.55 + i * 0.32, 0, (CART_CORRAL.minZ + CART_CORRAL.maxZ) / 2)
+          .multiply(new THREE.Matrix4().makeRotationY(-Math.PI / 2)),
+      );
+    }
+    add(models!.instanced('xe_mua_sam', mats)!);
+  } else {
+    add(boxFrom(CART_CORRAL, 0, 1.0, lambert(0x8d9794)));
+  }
+  const cartSign = labelPlane(['XE ĐẨY'], 0.6, 0.2, { bg: '#b3261e', fg: '#ffffff' });
+  cartSign.position.set((CART_CORRAL.minX + CART_CORRAL.maxX) / 2, 1.5, GLASS.minZ - 0.02);
+  cartSign.rotation.y = Math.PI;
+  add(cartSign);
+  const baskets = models?.static('gio_hang');
+  if (baskets) {
+    baskets.position.set((BASKET_STACK.minX + BASKET_STACK.maxX) / 2, 0, (BASKET_STACK.minZ + BASKET_STACK.maxZ) / 2);
+    add(baskets);
+  } else {
+    add(boxFrom(BASKET_STACK, 0, 0.52, lambert(0xd8342b)));
+  }
+
+  // Thùng HÀNG LỖI trong kho: bỏ hàng hết hạn / phồng / mốc lấy từ kệ vào đây
+  const defectBin = new THREE.Group();
+  {
+    const b = DEFECT_BIN;
+    const w = b.maxX - b.minX;
+    const d = b.maxZ - b.minZ;
+    const red = lambert(0xc62828);
+    const body = new THREE.Mesh(new THREE.BoxGeometry(w, 0.72, d), red);
+    body.position.y = 0.36;
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(w + 0.04, 0.05, d + 0.04), lambert(0x8e1c1c));
+    rim.position.y = 0.745;
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(w + 0.02, 0.03, d * 0.5), lambert(0x2a2d2c));
+    lid.position.set(0, 0.78, -d * 0.25);
+    lid.rotation.x = -0.5;
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(w + 0.004, 0.08, d + 0.004), lambert(0xf2c94c));
+    stripe.position.y = 0.55;
+    defectBin.add(body, rim, lid, stripe);
+    defectBin.traverse((o) => (o.castShadow = o.receiveShadow = true));
+    defectBin.position.set((b.minX + b.maxX) / 2, 0, (b.minZ + b.maxZ) / 2);
+    add(defectBin);
+    const label = labelPlane(['HÀNG LỖI'], 0.62, 0.16, { bg: '#fbfaf6', fg: '#b3261e' });
+    label.position.set(defectBin.position.x, 0.42, b.minZ - 0.004);
+    label.rotation.y = Math.PI;
+    add(label);
+    const sign = labelPlane(['THÙNG HÀNG LỖI', 'HẾT HẠN · PHỒNG · MỐC'], 1.7, 0.4, { bg: '#b3261e', fg: '#ffffff' });
+    sign.position.set(defectBin.position.x, 1.6, STORE.backZ - 0.13);
+    sign.rotation.y = Math.PI;
+    add(sign);
+  }
+  const binHit = boxFrom(DEFECT_BIN, 0, 0.85, HIDDEN);
+  binHit.userData = { kind: 'defectBin' };
+  add(binHit, true);
+
+  // ĐẢO KHUYẾN MÃI sát mặt kính: vạch sơn trên sàn + biển, nơi đặt kiện hàng 2 người khiêng
+  {
+    const z = PROMO_ZONE;
+    const w = z.maxX - z.minX;
+    const d = z.maxZ - z.minZ;
+    const floor = labelPlane(['ĐẢO KHUYẾN MÃI'], w, d, { bg: '#f2c94c', fg: '#8a1d1d' });
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set((z.minX + z.maxX) / 2, 0.004, (z.minZ + z.maxZ) / 2);
+    (floor.material as THREE.MeshBasicMaterial).toneMapped = true;
+    add(floor);
+    const sign = labelSign(['ĐẢO KHUYẾN MÃI', 'NƯỚC SUỐI GIÁ SỐC'], 1.4, 0.42, { bg: '#d8342b', fg: '#ffffff' });
+    sign.position.set((z.minX + z.maxX) / 2, 2.35, (z.minZ + z.maxZ) / 2);
+    add(sign);
+    // Vạch chỗ để kiện hàng mới trong kho
+    const spot = labelPlane(['KIỆN HÀNG · 2 NGƯỜI KHIÊNG'], 1.6, 0.5, { bg: '#2b3135', fg: '#f2c94c' });
+    spot.rotation.set(-Math.PI / 2, 0, Math.PI / 2, 'XYZ'); // đọc xuôi khi đi từ cửa kho (phía đông) vào
+    spot.position.set(BULKY_SPOT.x + 0.62, 0.004, BULKY_SPOT.z);
+    (spot.material as THREE.MeshBasicMaterial).toneMapped = true;
+    add(spot);
+  }
+
+  // ---- Rác: thùng rác rải trong siêu thị, thùng rác lớn trong kho ----
+  const trashBins: { bag: THREE.Object3D; sign: THREE.Object3D; hit: THREE.Mesh }[] = [];
+  TRASH_BINS.forEach((b, i) => {
+    const bin = models?.static('thung_rac') ?? new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.19, 0.8, 10).translate(0, 0.4, 0), lambert(0x2f8a4a));
+    bin.position.set(b.x, 0, b.z);
+    add(bin);
+    // túi rác đầy nhô lên miệng thùng
+    const bag = models?.static('tui_rac') ?? new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6).translate(0, 0.2, 0), lambert(0x15181a));
+    bag.scale.setScalar(0.9);
+    bag.position.set(b.x, 0.5, b.z);
+    add(bag);
+    const sign = labelSign(['THÙNG RÁC', 'CẦN GOM'], 0.5, 0.2, { bg: '#2f8a4a', fg: '#ffffff' });
+    sign.position.set(b.x, 1.35, b.z);
+    add(sign);
+    const hit = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.0, 8).translate(0, 0.5, 0), HIDDEN);
+    hit.position.set(b.x, 0, b.z);
+    hit.userData = { kind: 'trashBin', id: i };
+    add(hit);
+    trashBins.push({ bag, sign, hit });
+  });
+  function syncTrash(full: Set<number>): void {
+    trashBins.forEach((t, i) => {
+      t.bag.visible = full.has(i);
+      t.sign.visible = full.has(i);
+    });
+  }
+  const dc = { x: (DUMPSTER.minX + DUMPSTER.maxX) / 2, z: (DUMPSTER.minZ + DUMPSTER.maxZ) / 2 };
+  const dumpster = models?.static('thung_rac_lon');
+  if (dumpster) {
+    dumpster.position.set(dc.x, 0, dc.z);
+    dumpster.rotation.y = -Math.PI / 2; // mặt trước (chữ) quay vào trong kho (phía đông)
+    add(dumpster);
+  } else {
+    add(boxFrom(DUMPSTER, 0, 1.25, lambert(0x2d5a3a)));
+  }
+  const dumpHit = boxFrom(DUMPSTER, 0, 1.4, HIDDEN);
+  dumpHit.userData = { kind: 'dumpster' };
+  add(dumpHit);
+  const dumpSign = labelPlane(['THÙNG RÁC LỚN', 'ĐỔ TÚI RÁC VÀO ĐÂY'], 1.5, 0.36, { bg: '#2f8a4a', fg: '#ffffff' });
+  dumpSign.position.set(0.12, 2.3, dc.z);
+  dumpSign.rotation.y = Math.PI / 2;
+  add(dumpSign);
+
+  // ---- Xe đẩy hàng / xe gom rác (di chuyển được) ----
+  const carts = new Map<number, { obj: THREE.Group; hit: THREE.Mesh; boxes: THREE.Object3D[]; bags: THREE.Object3D[] }>();
+  const makeCart = (c: Cart) => {
+    const obj = new THREE.Group();
+    const m = models?.static(c.kind === 'hang' ? 'xe_day' : 'xe_rac');
+    if (m) obj.add(m);
+    else obj.add(boxFrom({ minX: -0.3, maxX: 0.3, minZ: -0.48, maxZ: 0.48 }, 0.1, c.kind === 'hang' ? 0.1 : 0.9, lambert(c.kind === 'hang' ? 0x3b403e : 0xd8b23a)));
+    const boxes: THREE.Object3D[] = [];
+    const bags: THREE.Object3D[] = [];
+    if (c.kind === 'hang') {
+      for (let i = 0; i < 3; i++) {
+        const b = models?.static('thung_carton') ?? new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.45).translate(0, 0.2, 0), lambert(0xa47a4a));
+        b.scale.setScalar(0.62);
+        b.position.set(0, 0.2 + i * 0.27, 0);
+        b.visible = false;
+        obj.add(b);
+        boxes.push(b);
+      }
+    } else {
+      for (let i = 0; i < 6; i++) {
+        const b = models?.static('tui_rac') ?? new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6).translate(0, 0.16, 0), lambert(0x15181a));
+        b.scale.setScalar(0.85);
+        b.position.set(((i % 2) - 0.5) * 0.24, 0.55 + Math.floor(i / 2) * 0.12, (Math.floor(i / 2) - 1) * 0.22);
+        b.rotation.y = i * 1.3;
+        b.visible = false;
+        obj.add(b);
+        bags.push(b);
+      }
+    }
+    const hit = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1, 1.05).translate(0, 0.55, 0), HIDDEN);
+    hit.userData = { kind: 'cart', id: c.id };
+    obj.add(hit);
+    add(obj);
+    const e = { obj, hit, boxes, bags };
+    carts.set(c.id, e);
+    return e;
+  };
+  function syncCarts(list: Cart[], heldId: number | null): void {
+    for (const c of list) {
+      const e = carts.get(c.id) ?? makeCart(c);
+      e.obj.position.set(c.pos.x, 0, c.pos.z);
+      // Model: mặt trước +z, tay đẩy ở phía sau (-z); xe hướng theo yaw (đẩy về phía trước)
+      e.obj.rotation.y = c.yaw;
+      e.boxes.forEach((b, i) => (b.visible = i < c.boxes));
+      e.bags.forEach((b, i) => (b.visible = i < c.bags));
+      e.hit.visible = c.id !== heldId;
+    }
+  }
+
+  // ---- Biển nổi trên nóc kệ cho đoạn kệ có việc: HÀNG LỖI / CẦN QUÉT (nhìn thấy qua nhiều dãy) ----
+  const jobFlags = new Map<string, THREE.Object3D>();
+  function setJobFlags(defectSecs: Set<string>, scanSecs: Set<string>): void {
+    const want = new Map<string, 'loi' | 'quet'>();
+    scanSecs.forEach((id) => want.set(id, 'quet'));
+    defectSecs.forEach((id) => want.set(id, 'loi'));
+    for (const [k, o] of jobFlags) {
+      const [id, kind] = k.split('|');
+      if (want.get(id) !== kind) {
+        scene.remove(o);
+        jobFlags.delete(k);
+      }
+    }
+    for (const [id, kind] of want) {
+      const k = `${id}|${kind}`;
+      if (jobFlags.has(k)) continue;
+      const sec = sectionById(id)!;
+      const row = SHELVES[sec.row - 1];
+      const g = new THREE.Group();
+      const sign = labelSign(kind === 'loi' ? ['⚠ HÀNG LỖI', sec.face === 'B' ? 'MẶT BẮC' : 'MẶT NAM'] : ['CẦN QUÉT', sec.face === 'B' ? 'MẶT BẮC' : 'MẶT NAM'], 1.0, 0.36,
+        kind === 'loi' ? { bg: '#e8731c', fg: '#ffffff' } : { bg: '#2f7fc1', fg: '#ffffff' });
+      sign.position.y = 2.95;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.55, 5), lambert(0x2b3135));
+      pole.position.y = 2.7;
+      g.add(sign, pole);
+      // trên nóc kệ, lệch về phía mặt có việc
+      g.position.set((sec.x0 + sec.x1) / 2, 0, row.zc + sec.out * 0.25);
+      add(g);
+      jobFlags.set(k, g);
+    }
+  }
+
+  // ---- Cửa PHÒNG KIỂM KÊ: luôn khoá với nhân viên, tự trượt mở khi Người Kiểm Kê tới gần ----
+  const ad = AUDIT_DOOR;
+  const doorW = ad.maxX - ad.minX;
+  const auditDoor = new THREE.Mesh(new THREE.BoxGeometry(doorW, 2.3, 0.06), lambert(0x3a1414));
+  const doorBase = { x: (ad.minX + ad.maxX) / 2, z: STORE.backZ };
+  auditDoor.position.set(doorBase.x, 1.15, doorBase.z);
+  auditDoor.castShadow = true;
+  add(auditDoor, true);
+  const lockSign = labelPlane(['KHOÁ', 'CHỈ KIỂM KÊ VIÊN'], 0.9, 0.3, { bg: '#1a0b0b', fg: '#ff6a5a' });
+  lockSign.position.set(0, 0.25, 0.035);
+  auditDoor.add(lockSign);
+  let doorOpen = 0;
+  let doorTarget = 0;
+  function setAuditorPos(pp: V2): void {
+    doorTarget = Math.hypot(pp.x - doorBase.x, pp.z - doorBase.z) < 2.2 ? 1 : 0;
+  }
+
+  // Kiện hàng cồng kềnh (theo ca): model kien_nuoc + vùng bấm tàng hình
+  const bulkies = new Map<number, { obj: THREE.Object3D; hit: THREE.Mesh }>();
+  const bulkyHitGeo = new THREE.BoxGeometry(BULKY_SIZE.wid + 0.1, BULKY_SIZE.h + 0.1, BULKY_SIZE.len + 0.2).translate(0, (BULKY_SIZE.h + 0.1) / 2, 0);
+  const makeBulky = (id: number) => {
+    const obj = new THREE.Group();
+    obj.rotation.order = 'YXZ';
+    const m = models?.static('kien_nuoc');
+    if (m) obj.add(m);
+    else obj.add(boxFrom({ minX: -BULKY_SIZE.wid / 2, maxX: BULKY_SIZE.wid / 2, minZ: -BULKY_SIZE.len / 2, maxZ: BULKY_SIZE.len / 2 }, 0, BULKY_SIZE.h, lambert(0x9ad8ee)));
+    const hit = new THREE.Mesh(bulkyHitGeo, HIDDEN);
+    hit.userData = { kind: 'bulky', id };
+    obj.add(hit);
+    add(obj);
+    const e = { obj, hit };
+    bulkies.set(id, e);
+    return e;
+  };
+  /** Kéo lê một mình: nghiêng, đầu gần tay nhấc lên, đầu xa lết trên sàn. */
+  const SOLO_TILT = 0.42;
+  function syncBulky(list: Bulky[], heldId: number | null, duo: boolean): void {
+    const ids = new Set(list.map((b) => b.id));
+    for (const [id, e] of bulkies) {
+      if (!ids.has(id)) {
+        scene.remove(e.obj);
+        bulkies.delete(id);
+      }
+    }
+    let done = 0;
+    for (const b of list) {
+      const e = bulkies.get(b.id) ?? makeBulky(b.id);
+      const o = e.obj;
+      o.rotation.y = b.yaw;
+      let y = 0;
+      let tilt = 0;
+      if (b.done) {
+        y = Math.floor(done / 2) * BULKY_SIZE.h; // kiện thứ 3 trở đi chồng lên trên
+        done++;
+      } else if (b.carriers.length) {
+        const two = b.id === heldId ? duo : b.carriers.length >= 2;
+        if (two) y = 0.42;
+        else {
+          tilt = SOLO_TILT;
+          y = (BULKY_SIZE.len / 2) * Math.sin(SOLO_TILT);
+        }
+      }
+      o.rotation.x = tilt;
+      o.position.set(b.pos.x, y, b.pos.z);
+      // Kiện mình đang cầm thì không nhắm trúng chính nó (để nhắm được kệ / quầy phía sau)
+      e.hit.visible = b.id !== heldId && !b.done;
+    }
   }
 
   // Kho: cửa nhân viên (đã khoá) và máy chấm công, nơi điểm danh lúc 06:00
@@ -1014,10 +1484,19 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     // Lon đứng trước: nhắm xuống sàn cạnh kệ thì ưu tiên nhặt lon
     interactables: () => [
       ...cans, ...shelfHits, ...pileBoxes.filter((b) => b.visible), ...coldPileBoxes.filter((b) => b.visible),
-      ...coldHits, panel, counterHit,
+      ...coldHits, panel, counterHit, binHit, powerHit, dumpHit,
+      ...trashBins.map((t) => t.hit),
+      ...[...bulkies.values()].filter((e) => e.hit.visible).map((e) => e.hit),
+      ...[...carts.values()].filter((e) => e.hit.visible).map((e) => e.hit),
     ],
+    syncBulky,
+    syncCarts,
+    syncTrash,
+    setJobFlags,
+    setAuditorPos,
     resetNight(s, night) {
       for (const sec of SECTIONS) setSectionFilled(sec.id, !s.restockNeeded.has(sec.id));
+      syncShelf(s);
       tags.forEach((t) => scene.remove(t));
       tags.clear();
       recountTags.forEach((t) => scene.remove(t));
@@ -1031,6 +1510,7 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
       setColdPileCount(s.coldPile);
       cans.forEach((c) => scene.remove(c));
       cans.length = 0;
+      syncBulky([], null, false);
       figures.forEach((f) => (f.visible = night >= 2));
       drift = driftTarget = 0;
     },
@@ -1042,6 +1522,8 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
       setSectionFilled(id, false);
       makeTag(id);
     },
+    syncShelf,
+    productSize,
     setRecount(id, on) {
       if (on && !recountTags.has(id)) recountTags.set(id, shelfTag(id, 'KIỂM LẠI', '#f2c94c', '#1e2422', 1.66));
       if (!on) dropTag(recountTags, id);
@@ -1094,6 +1576,9 @@ export function buildWorld(playerName: string, models: ModelLib | null = null, q
     },
     update(dt) {
       for (const m of mixers) m.update(dt);
+      doorOpen += (doorTarget - doorOpen) * Math.min(1, dt * 4);
+      auditDoor.position.x = doorBase.x + doorOpen * (doorW + 0.05); // trượt sang đông, sau vách
+      auditDoor.position.z = doorBase.z - 0.12 * doorOpen;
       drift += (driftTarget - drift) * Math.min(1, dt * 0.8);
       // Nhóm ca trước đứng sát mặt kính hơn khi sổ lệch
       figures.forEach((f, i) => (f.position.z = figureZ[i] - (figureZ[i] - (GLASS.maxZ + 0.7)) * drift));

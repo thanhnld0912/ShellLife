@@ -6,7 +6,7 @@
 //          0,55–0,72 úp mạnh xuống; nhân viên ngồi phịch, khuất trong thùng
 //          1,4–2,0   ấn bẹp thùng xuống bằng thùng thường · 2,0–2,4 dán băng keo, hiện nhãn tên
 //          2,6–3,0   nhấc thùng lên VAI PHẢI
-//   carry:  vác thùng trên vai về kho (thùng nhún theo bước)
+//   carry:  vác thùng trên vai về kho (thùng gắn vào xương thân: nhún, lắc đúng theo người)
 //   store:  hạ thùng từ vai xuống ô trong kho (Game báo 'stored' thì thế giới vẽ thùng cố định thay thế)
 
 import * as THREE from 'three';
@@ -16,7 +16,7 @@ import { playClip, type ModelInstance, type ModelLib } from './models.ts';
 
 const BIG = 1.75; // thùng lúc úp xuống người
 /** Chỗ thùng trên vai phải Người Kiểm Kê (so với gốc model, trước khi xoay theo hướng nhìn). Khớp tư thế VAI trong script Blender. */
-const SHOULDER_BOX = { x: -0.42, y: 1.74, z: 0.0 };
+const SHOULDER_BOX = { x: -0.5, y: 1.745, z: 0.0 };
 const T_UP = 0.3;
 const T_SLAM = 0.55;
 const T_LAND = 0.72;
@@ -37,6 +37,9 @@ export class CaptureView {
   private lastState = '';
   private carryFrom = new THREE.Vector3();
   private carryRot = 0;
+  /** Vị trí thùng so với xương thân lúc bắt đầu vác (giữ cố định suốt đường về kho). */
+  private carryOffset: THREE.Matrix4 | null = null;
+  private carryScale = new THREE.Vector3();
   private tmp = new THREE.Vector3();
   /** Gọi một lần lúc thùng chạm đất (để phát tiếng). */
   onLand: (() => void) | null = null;
@@ -77,7 +80,8 @@ export class CaptureView {
     this.landed = this.crushed = false;
   }
 
-  update(a: Auditor, _dt = 0): void {
+  /** torso: xương thân ('than') của model Người Kiểm Kê, để thùng vác trên vai đi theo người. */
+  update(a: Auditor, _dt = 0, torso: THREE.Object3D | null = null): void {
     const c = a.capture;
     const st = c ? a.state : 'none';
     const t = a.stateTime;
@@ -137,9 +141,22 @@ export class CaptureView {
       this.box.visible = true;
       this.victim.visible = false;
       this.box.scale.setScalar(1);
-      this.box.position.copy(this.shoulder(a));
-      if (a.moving) this.box.position.y += Math.abs(Math.sin(performance.now() / 300)) * 0.035;
-      this.box.rotation.set(0, a.heading, 0.04);
+      if (torso) {
+        torso.updateWorldMatrix(true, false);
+        if (!this.carryOffset) {
+          const want = new THREE.Matrix4().compose(
+            this.shoulder(a),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(0, a.heading, 0)),
+            new THREE.Vector3(1, 1, 1),
+          );
+          this.carryOffset = torso.matrixWorld.clone().invert().multiply(want);
+        }
+        torso.matrixWorld.clone().multiply(this.carryOffset).decompose(this.box.position, this.box.quaternion, this.carryScale);
+        this.box.scale.setScalar(1);
+      } else {
+        this.box.position.copy(this.shoulder(a));
+        this.box.rotation.set(0, a.heading, 0);
+      }
     } else if (st === 'store') {
       // Hạ từ vai xuống ô trong kho, xoay về hướng như các thùng đã lưu
       const k = smooth(seg(t, 0.15, STORE_TIME * 0.85));
@@ -159,6 +176,7 @@ export class CaptureView {
   }
 
   private enter(st: string, a: Auditor): void {
+    if (st === 'carry') this.carryOffset = null;
     if (st === 'boxing' && this.victimInst) {
       this.victimInst.mixer.stopAllAction();
       playClip(this.victimInst, null, 'dong_thung', { loop: false });

@@ -58,6 +58,11 @@ export class AuditorView {
     scene.add(this.group, this.marker);
   }
 
+  /** Xương của model (vd. 'than'), null nếu dùng hình tạm. */
+  bone(name: string): THREE.Object3D | null {
+    return this.model?.root.getObjectByName(name) ?? null;
+  }
+
   /** Hình tạm bằng khối khi không có model. */
   private buildPlaceholder(): void {
     const uniform = new THREE.MeshLambertMaterial({ color: 0x1f2a33 });
