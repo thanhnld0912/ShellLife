@@ -1,13 +1,17 @@
-// Bản thử giai đoạn 1: một người chơi, siêu thị dùng model Blender, Người Kiểm Kê, chỉ tiêu, đóng thùng,
+// Bản thử giai đoạn 1: siêu thị dùng model Blender, Người Kiểm Kê, việc được giao, đóng thùng,
 // chế độ xem, bảng sự kiện (phím P) để tự điều khiển sự kiện khi chơi thử.
+// Chơi mạng bản thử (2 người): xem src/client/net.ts.
 
 import './style.css';
 import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
-import { Game, orderText, type Evaluation } from './sim/game.ts';
+import { BULKY_MOVE, Game, orderText, playerSpawn, type EventConfig, type Evaluation } from './sim/game.ts';
+import { GuestSync, HostSync, NetClient, type Lobby, type StartInfo } from './client/net.ts';
+import { RemotePlayerView } from './render/remotePlayer.ts';
+import { labelPlane } from './render/labels.ts';
 import { clockOf } from './sim/shift.ts';
 import {
-  CLOCK_ZONE, COUNTER, PLAYER_SPAWN, PLAYER_SPAWN_YAW, SOLIDS, coldUnitById, inSafeRoom, sectionAt, type ColdUnit, type Section,
+  CLOCK_ZONE, COUNTER, PLAYER_SPAWN_YAW, SOLIDS, coldUnitById, inSafeRoom, sectionAt, type ColdUnit, type Section,
 } from './sim/layout.ts';
 import { ThrowAim } from './client/throwAim.ts';
 import { HeldItem } from './client/heldItem.ts';
@@ -105,6 +109,22 @@ let eatT = 0;
 let eatWarned = false;
 const EAT_TIME = 1.4;
 let deathStage: 'lunge' | 'cine' | 'black' | null = null;
+// ---- Chơi mạng ----
+let net: NetClient | null = null;
+/** Mình là chủ phòng: chạy ca, gửi trạng thái. */
+let hostSync: HostSync | null = null;
+/** Mình vào phòng người khác: game là bản sao. */
+let guestSync: GuestSync | null = null;
+/** Người chơi khác (theo chỉ số trong game.players; chỗ của mình là null). */
+let remotes: ({ view: RemotePlayerView; tag: THREE.Mesh } | null)[] = [];
+/** Đi / chạy / rón rén của mình ở khung hình này (gửi cho chủ phòng). */
+let motion = { moving: false, running: false, sneak: false };
+/** Đang cầm đầu sau kiện hàng (người kia dẫn): vị trí khung hình trước. */
+let followPrev: V2 | null = null;
+let heldKey: string | null = null;
+const netMode = () => !!(hostSync || guestSync);
+/** Mình là người thứ mấy trong game.players. */
+const myIndex = () => (game ? Math.max(0, game.players.indexOf(game.player)) : 0);
 let deathT = 0;
 /** Góc máy cảnh đóng thùng. */
 const cine = { pos: new THREE.Vector3(), look: new THREE.Vector3() };
@@ -196,15 +216,22 @@ loadModels((done, total) => (startBtn.textContent = `Đang tải model ${done}/$
   if (box) player.setCarryModel(box);
   startBtn.disabled = false;
   startBtn.textContent = 'Nhận ca';
+  if (lobbyState) showLobby(lobbyState);
+  startAsGuest();
   document.getElementById('play-info')!.textContent = `Đồ hoạ: ${QUALITY[quality].label} (đổi trong Cài đặt) · thử việc 5 đêm, mỗi đêm khoảng 6,5 phút.`;
 });
 
 // ---- Bắt đầu ----
 const nameInput = document.getElementById('name') as HTMLInputElement;
-startBtn.addEventListener('click', () => {
+const myName = () => (nameInput.value.trim() || 'Minh').slice(0, 14);
+startBtn.addEventListener('click', () => beginShift(myName()));
+
+/** Nhận ca. Chơi mạng: names = tên mọi người trong phòng, me = mình là người thứ mấy, seed / events do chủ phòng quyết. */
+function beginShift(name: string, o: { seed?: number; names?: string[]; me?: number; events?: Partial<EventConfig> } = {}): void {
   if (!models) return;
-  const name = (nameInput.value.trim() || 'Minh').slice(0, 14);
-  game = new Game(name, { events: dev.saved.events, tuning: dev.saved.tuning });
+  const me = o.me ?? 0;
+  game = new Game(name, { seed: o.seed, events: o.events ?? dev.saved.events, tuning: dev.saved.tuning, players: o.names });
+  if (guestSync) guestSync.wrap(game);
   // Mức Thấp: hàng hoá là khối hộp, dán ảnh chụp mặt trước của từng món để vẫn thấy nhãn và hình
   if (QUALITY[quality].proxyGoods) models.bakeImpostors(renderer, MODEL_NAMES.filter((n) => n.startsWith('hh_')));
   world = buildWorld(name, models, QUALITY[quality]);
@@ -225,9 +252,10 @@ startBtn.addEventListener('click', () => {
   applyDevSaved(dev.saved, player, world);
   dev.clearLog();
   world.resetNight(game.shift, game.night);
-  player.teleport(PLAYER_SPAWN, PLAYER_SPAWN_YAW);
+  player.teleport(playerSpawn(me), PLAYER_SPAWN_YAW);
   player.setCarrying(false);
   player.onNoise = (at, r, e) => game?.noise(at, r, e);
+  remotes = game.players.map((p, i) => (i === me ? null : makeRemote(p.name, playerSpawn(i))));
   audio.start();
   audio.music('game');
   hud.show('menu', false);
@@ -236,9 +264,24 @@ startBtn.addEventListener('click', () => {
   world.syncTrash(game.shift.trashFull);
   world.syncCarts(game.shift.carts, null);
   buildHandBags();
+  syncReset();
   mode = 'play';
-  look.lock();
-});
+  if (guestSync) {
+    // Bắt đầu do chủ phòng bấm: trình duyệt chỉ cho khoá chuột khi chính mình bấm
+    hud.show('pause', true);
+    hud.toast('Chủ phòng đã bắt đầu ca · bấm "Tiếp tục" để vào', true);
+  } else look.lock();
+}
+
+/** Người chơi khác: model nhân viên + bảng tên luôn quay về phía mình. */
+function makeRemote(name: string, at: V2): { view: RemotePlayerView; tag: THREE.Mesh } {
+  const view = new RemotePlayerView(world!.scene, models);
+  view.place(at, PLAYER_SPAWN_YAW);
+  view.visible = true;
+  const tag = labelPlane([name.toUpperCase()], 0.9, 0.2, { bg: '#1e2422', fg: '#f2c94c' });
+  world!.scene.add(tag);
+  return { view, tag };
+}
 
 controls.addEventListener('lock', () => hud.show('pause', false));
 controls.addEventListener('unlock', () => {
@@ -250,7 +293,7 @@ controls.addEventListener('unlock', () => {
 window.addEventListener('keydown', (e) => {
   // Đang mở Cài đặt / Hướng dẫn: phím chỉ dành cho bảng đó
   if (menu.overlayOpen) return;
-  if (e.code === 'KeyP' && mode === 'play' && game && !e.repeat) {
+  if (e.code === 'KeyP' && mode === 'play' && game && !e.repeat && !guestSync) {
     e.preventDefault();
     if (dev.isOpen) {
       dev.close();
@@ -298,7 +341,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ') startAim();
   if (e.code === 'KeyT') toggleFlash();
   if (e.code === 'KeyG') dropBox();
-  if (e.code === 'F6' && debug) {
+  if (e.code === 'F6' && debug && !guestSync) {
     e.preventDefault();
     game.forceBlackout();
   }
@@ -329,8 +372,8 @@ function releaseAim(): void {
   if (!game || !world || !throwAim?.aiming) return;
   const r = throwAim.release(() => {
     if (!game || !world || mode !== 'play' || !r) return;
-    const id = game.dropLitter(r.land);
-    world.addCan(r.land.x, r.land.z, id);
+    game.dropLitter(r.land);
+    syncWorld();
     audio.clank(p3(r.land, 0.1));
   });
   if (!r) return;
@@ -750,7 +793,7 @@ function bulkySolids(): AABB[] {
 /** Kiện hàng và đồng nghiệp ảo (bảng sự kiện → "Đồng nghiệp ảo đi theo"). */
 function updateCoworker(dt: number): void {
   if (!game || !world || !coworker) return;
-  const want = game.dev.helper && (mode === 'play' || mode === 'eval');
+  const want = !netMode() && game.dev.helper && (mode === 'play' || mode === 'eval');
   if (want !== coworker.isActive) {
     camera.getWorldDirection(tmpV);
     coworker.setActive(want, player.pos, Math.atan2(tmpV.x, tmpV.z));
@@ -769,6 +812,228 @@ function updateCoworker(dt: number): void {
     pos: player.pos, running: player.keys.has('ShiftLeft') && !game.player.sneak && !hb, sneak: game.player.sneak,
     sheet: sheetOpen, light: player.flashOn,
   }, hb && hb.carriers.includes('ban') ? hb : null);
+}
+
+/** Người chơi khác: động tác theo trạng thái (đi, chạy, xem phiếu, ôm thùng, khiêng kiện…), bảng tên trên đầu. */
+function updateRemotes(dt: number): void {
+  if (!game) return;
+  const g = game;
+  g.players.forEach((p, i) => {
+    const r = remotes[i];
+    if (!r) return;
+    const show = p.alive && !p.gone;
+    r.view.visible = show;
+    r.tag.visible = show;
+    if (!show) return;
+    const hb = p.bulky !== null ? g.shift.bulky.find((b) => b.id === p.bulky) : undefined;
+    r.view.update(
+      {
+        pos: p.pos, yaw: p.yaw, moving: p.moving, running: p.running, sneak: p.sneak, sheet: p.sheet, carry: p.carry, light: p.light,
+        bulky: hb ? (hb.carriers[0] === p.id ? 'back' : 'front') : null,
+      },
+      dt,
+    );
+    r.tag.position.set(r.view.root.position.x, p.sneak ? 1.95 : 2.15, r.view.root.position.z);
+    r.tag.quaternion.copy(camera.quaternion);
+  });
+}
+
+/** Người chơi khác là vật cản (trừ người đang cùng khiêng kiện với mình). */
+function playerSolids(): AABB[] {
+  if (!game || game.players.length < 2) return [];
+  const me = game.player;
+  const out: AABB[] = [];
+  for (const p of game.players) {
+    if (p === me || !p.alive || p.gone || (me.bulky !== null && p.bulky === me.bulky)) continue;
+    out.push({ minX: p.pos.x - 0.22, maxX: p.pos.x + 0.22, minZ: p.pos.z - 0.22, maxZ: p.pos.z + 0.22 });
+  }
+  return out;
+}
+
+/** Thùng đang ôm, món đang cầm: theo đúng lõi game (chơi mạng: chủ phòng có thể từ chối việc mình vừa làm). */
+function reconcileHands(): void {
+  if (!game || mode !== 'play') return;
+  const c = game.player.carry;
+  if ((player.carryKind ?? null) !== c) player.setCarrying(c ?? false);
+  const h = game.player.hand;
+  const key = h ? h.key : null;
+  if (key !== heldKey) {
+    heldKey = key;
+    heldItem?.set(h ? h.product : null, h?.defect ?? null);
+  }
+}
+
+// ---- Cảnh theo lõi game: kệ, tủ lạnh, đống thùng, thùng rác, lon nước ----
+// Việc do người chơi khác làm (chơi mạng) không đi qua interact() trên máy này, nên mỗi khung hình so cảnh với lõi game.
+interface SyncState {
+  need: Set<string>; taken: Set<string>; defects: Set<string>; recount: Set<string>; cold: Set<string>;
+  pile: number; coldPile: number; trash: string; cans: Set<number>;
+}
+let sync: SyncState | null = null;
+const secOf = (key: string) => key.slice(0, key.indexOf(':'));
+function syncReset(): void {
+  if (!game) return;
+  const s = game.shift;
+  sync = {
+    need: new Set(s.restockNeeded), taken: new Set(s.taken), defects: new Set(s.defects.keys()), recount: new Set(s.recount),
+    cold: new Set(s.coldNeeded), pile: s.pile, coldPile: s.coldPile, trash: [...s.trashFull].sort().join(), cans: new Set(),
+  };
+  syncWorld();
+}
+function syncWorld(): void {
+  if (!game || !world || !sync) return;
+  const s = game.shift;
+  const w = world;
+  const st = sync;
+  const secs = new Set<string>();
+  for (const id of s.restockNeeded) if (!st.need.has(id)) (w.setNeeded(id), secs.add(id));
+  for (const id of st.need) if (!s.restockNeeded.has(id)) (w.setRestocked(id), secs.add(id));
+  const defects = new Set(s.defects.keys());
+  for (const k of s.taken) if (!st.taken.has(k)) secs.add(secOf(k));
+  for (const k of st.taken) if (!s.taken.has(k)) secs.add(secOf(k));
+  for (const k of defects) if (!st.defects.has(k)) secs.add(secOf(k));
+  for (const k of st.defects) if (!defects.has(k)) secs.add(secOf(k));
+  for (const id of secs) w.syncShelf(s, id);
+  for (const id of s.recount) if (!st.recount.has(id)) w.setRecount(id, true);
+  for (const id of st.recount) if (!s.recount.has(id)) w.setRecount(id, false);
+  for (const id of s.coldNeeded) if (!st.cold.has(id)) w.setColdNeeded(id, true);
+  for (const id of st.cold) if (!s.coldNeeded.has(id)) w.setColdNeeded(id, false);
+  if (s.pile !== st.pile) w.setPileCount(s.pile);
+  if (s.coldPile !== st.coldPile) w.setColdPileCount(s.coldPile);
+  const trash = [...s.trashFull].sort().join();
+  if (trash !== st.trash) w.syncTrash(s.trashFull);
+  const cans = new Set(s.litter.map((l) => l.id));
+  for (const l of s.litter) if (!st.cans.has(l.id)) w.addCan(l.x, l.z, l.id);
+  for (const id of st.cans) if (!cans.has(id)) w.removeCan(id);
+  sync = {
+    need: new Set(s.restockNeeded), taken: new Set(s.taken), defects, recount: new Set(s.recount), cold: new Set(s.coldNeeded),
+    pile: s.pile, coldPile: s.coldPile, trash, cans,
+  };
+}
+
+// ---- Chơi mạng: tạo phòng, vào phòng, phòng chờ ----
+const $id = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const mpInfo = $id('mp-info');
+const lobbyInfo = $id('lobby-info');
+const codeInput = $id<HTMLInputElement>('mp-code');
+const lobbyStart = $id<HTMLButtonElement>('lobby-start');
+let pendingStart: StartInfo | null = null;
+let lobbyState: Lobby | null = null;
+
+async function ensureNet(): Promise<NetClient | null> {
+  if (net) return net;
+  mpInfo.textContent = 'Đang kết nối…';
+  try {
+    net = await NetClient.connect();
+  } catch {
+    mpInfo.textContent = 'Không kết nối được máy chủ chơi mạng. Chạy game bằng "npm run dev" hoặc "npm run play" (mở qua http://…, không mở file trực tiếp).';
+    return null;
+  }
+  mpInfo.textContent = '';
+  net.onLobby = showLobby;
+  net.onError = (m) => {
+    mpInfo.textContent = m;
+    lobbyInfo.textContent = m;
+  };
+  net.onStart = (st) => {
+    pendingStart = st;
+    startAsGuest();
+  };
+  net.onLeft = (i, n) => {
+    hostSync?.playerLeft(i);
+    hud.toast(`${n} đã rời phòng.`, false);
+  };
+  net.onClose = (m) => {
+    net = null;
+    if (mode === 'menu') {
+      menu.screen('play');
+      mpInfo.textContent = m;
+      return;
+    }
+    hud.announce(`${m} Quay về menu sau vài giây…`);
+    hud.toast(m, false);
+    setTimeout(() => location.reload(), 4500);
+  };
+  return net;
+}
+
+function showLobby(l: Lobby): void {
+  lobbyState = l;
+  if (mode !== 'menu') return;
+  menu.screen('lobby');
+  $id('lobby-code').textContent = l.code;
+  $id<HTMLInputElement>('lobby-link').value = `${location.origin}${location.pathname}?room=${l.code}`;
+  const names = l.players;
+  const slots = [...names, ...Array(Math.max(0, 2 - names.length)).fill(undefined)];
+  $id('lobby-list').innerHTML = slots
+    .map((n, i) =>
+      n
+        ? `<li>${n.replace(/[<&>]/g, '')}<small>${i === 0 ? 'chủ phòng' : 'vào phòng'}${i === l.you ? ' · bạn' : ''}</small></li>`
+        : '<li class="empty">đang chờ người vào…</li>',
+    )
+    .join('');
+  const full = names.filter(Boolean).length >= 2;
+  lobbyStart.hidden = l.you !== 0;
+  lobbyStart.disabled = !full || !models;
+  lobbyInfo.textContent =
+    l.you === 0 ? (full ? (models ? 'Đủ người. Bấm Bắt đầu ca.' : 'Đang tải model…') : 'Đang chờ bạn vào phòng…') : 'Đang chờ chủ phòng bắt đầu ca…';
+}
+
+$id('mp-create').addEventListener('click', async () => {
+  const n = await ensureNet();
+  n?.create(myName());
+});
+$id('mp-join').addEventListener('click', async () => {
+  const code = codeInput.value.trim().toUpperCase();
+  if (code.length !== 4) {
+    mpInfo.textContent = 'Mã phòng gồm 4 chữ cái.';
+    return;
+  }
+  const n = await ensureNet();
+  n?.join(code, myName());
+});
+codeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $id('mp-join').click();
+});
+$id('lobby-leave').addEventListener('click', () => {
+  net?.leave();
+  net = null;
+  lobbyState = null;
+  menu.screen('play');
+});
+lobbyStart.addEventListener('click', () => {
+  const l = lobbyState;
+  if (!net || !l || l.you !== 0 || !models) return;
+  const names = l.players.filter((x): x is string => !!x);
+  if (names.length < 2) return;
+  const st: StartInfo = { seed: (Date.now() ^ (Math.random() * 1e9)) >>> 0, names, events: dev.saved.events };
+  net.start(st);
+  hostSync = new HostSync(net, () => game);
+  beginShift(names[0], { seed: st.seed, names, me: 0, events: st.events });
+});
+
+/** Chủ phòng đã bắt đầu: vào ca (đợi tải xong model nếu chưa xong). */
+function startAsGuest(): void {
+  const st = pendingStart;
+  if (!st || !net || !models || !lobbyState || game) return;
+  pendingStart = null;
+  const me = lobbyState.you;
+  guestSync = new GuestSync(net, me, () => game);
+  guestSync.onResult = (r) => hud.toast(r.msg, r.ok);
+  beginShift(st.names[me] ?? myName(), { seed: st.seed, names: st.names, me, events: st.events });
+}
+
+// Đóng tab / chuyển trang: báo rời phòng ngay (trình duyệt có thể giữ trang cũ trong bộ nhớ, kết nối chưa đóng)
+window.addEventListener('pagehide', () => net?.leave());
+
+// Đường link mời: ?room=ABCD → mở sẵn màn Chơi, điền mã phòng
+{
+  const room = new URLSearchParams(location.search).get('room');
+  if (room) {
+    menu.screen('play');
+    codeInput.value = room.toUpperCase().slice(0, 4);
+    mpInfo.textContent = `Mã phòng ${codeInput.value}: nhập tên rồi bấm Vào phòng.`;
+  }
 }
 
 // ---- Tủ điện tổng: bật cầu dao nhánh theo đúng thứ tự trên sơ đồ, rồi gạt cầu dao tổng ----
@@ -949,6 +1214,7 @@ function hintFor(f: Focus): string {
 // ---- Sự kiện từ lõi game ----
 function handleEvents(): void {
   if (!game) return;
+  const meId = game.player.id;
   for (const e of game.events) {
     switch (e.type) {
       case 'announce':
@@ -979,12 +1245,18 @@ function handleEvents(): void {
         setTimeout(() => game && audio.tone(1760, 0.05, 0.1, p3(game.auditor.pos, 1.3), 'square'), 120);
         break;
       case 'count':
+        if (e.who !== meId) {
+          // Người khác bị đếm: chỉ nghe tiếng máy quét
+          audio.tone(e.n === 1 ? 990 : 1180, 0.16, 0.12, p3(game.auditor.pos, 1.3));
+          break;
+        }
         if (e.n === 1) dev.log('Bị tia quét chạm: bắt đầu đếm');
         hud.count(e.n);
         audio.tone(e.n === 1 ? 990 : 1180, 0.16, 0.2, p3(game.auditor.pos, 1.3));
         audio.speak(e.n === 1 ? 'Một' : 'Hai', 1.0);
         break;
       case 'lost':
+        if (e.who !== meId) break;
         dev.log('Thoát khỏi tia quét');
         hud.count(0);
         break;
@@ -1000,6 +1272,14 @@ function handleEvents(): void {
         onEval(e.ev);
         break;
       case 'dead':
+        if (e.who !== meId) {
+          dev.log(`${e.name} đã chết`);
+          if (e.reason === 'scan') {
+            captureView?.begin(e.name);
+            hud.toast(`${e.name} bị Người Kiểm Kê đếm đủ, đóng thùng!`, false);
+          }
+          break;
+        }
         dev.log(e.reason === 'scan' ? 'Bị đếm đủ: Người Kiểm Kê lao tới' : 'Thẻ đủ 3 lỗ: chấm dứt hợp đồng');
         dev.close(true);
         startDeath(e.reason, e.slot);
@@ -1019,6 +1299,10 @@ function handleEvents(): void {
         audio.clank(p3(e.slot, 0.2));
         break;
       case 'clockIn':
+        if (e.who !== meId) {
+          dev.log(`${game.players.find((p) => p.id === e.who)?.name ?? e.who} đã chấm công vào ca`);
+          break;
+        }
         dev.log(e.late ? 'Chấm công vào ca TRỄ' : 'Đã chấm công vào ca');
         audio.click(p3(player.pos, 1.2), 0.7, 900);
         setTimeout(() => audio.tone(e.late ? 330 : 1320, 0.12, 0.08), 120);
@@ -1032,6 +1316,13 @@ function handleEvents(): void {
       case 'night':
         dev.log(`Bắt đầu lại đêm ${game.night}`);
         resetNightView();
+        if (guestSync && mode !== 'play') {
+          // Chủ phòng đã nhận ca đêm sau
+          hud.show('eval', false);
+          mode = 'play';
+          hud.show('pause', true);
+          hud.toast(`Đêm ${game.night} bắt đầu · bấm "Tiếp tục"`, true);
+        }
         break;
       case 'dev':
         dev.log(e.text);
@@ -1097,7 +1388,7 @@ function handleEvents(): void {
         // Ọc ọc… ối…: tiếng trầm, ai đứng gần cũng nghe
         audio.tone(95, 0.5, 0.22, p3(e.at, 1.2), 'sawtooth');
         setTimeout(() => audio.tone(70, 0.6, 0.18, p3(e.at, 1.2), 'sawtooth'), 380);
-        hud.toast('Ọc ọc… ối… (đau bụng, rên thành tiếng)', false);
+        if (e.who === meId) hud.toast('Ọc ọc… ối… (đau bụng, rên thành tiếng)', false);
         break;
     }
   }
@@ -1118,8 +1409,15 @@ function onEval(ev: Evaluation): void {
   hud.evaluation(game, ev, () => {
     hud.show('eval', false);
     if (!game || !world) return;
+    if (guestSync) {
+      // Người vào phòng: chủ phòng quyết định nhận ca tiếp
+      if (ev.final) showFinal();
+      else if (!ev.dead) hud.toast('Đang chờ chủ phòng nhận ca tiếp…', true);
+      return;
+    }
     if (ev.dead) {
       game.terminate();
+      hostSync?.collect(game.events);
       handleEvents();
       return;
     }
@@ -1128,6 +1426,7 @@ function onEval(ev: Evaluation): void {
       return;
     }
     game.nextNight();
+    hostSync?.push({ type: 'night' });
     resetNightView();
     mode = 'play';
     look.lock();
@@ -1140,7 +1439,12 @@ function resetNightView(): void {
   powerTarget = 1;
   flickerT = 0;
   world.resetNight(game.shift, game.night);
-  player.teleport(PLAYER_SPAWN, PLAYER_SPAWN_YAW);
+  syncReset();
+  // Chơi mạng: người đã chết đêm trước được vào ca lại
+  deathStage = null;
+  hud.death('off');
+  hud.show('hud', true);
+  player.teleport(playerSpawn(myIndex()), PLAYER_SPAWN_YAW);
   throwAim?.cancel();
   player.setCarrying(false);
   player.setFlashlight(false);
@@ -1166,7 +1470,7 @@ function resetNightView(): void {
 function startDeath(reason: 'scan' | 'holes', slot: V2): void {
   if (!game || !world) return;
   mode = 'dying';
-  dyingName = game.name;
+  dyingName = game.player.name;
   heldItem?.set(null);
   if (powerOpen) closePower();
   game.releaseCart();
@@ -1353,16 +1657,25 @@ function frame(now: number): void {
   if (game && world && auditorView) {
     // Thời gian của thế giới (Người Kiểm Kê, đồng hồ ca) có thể tua nhanh trong bảng sự kiện
     const wdt = dt * devHost.timeScale;
-    if (mode === 'play' && (controls.isLocked || powerOpen)) {
+    motion = { moving: false, running: false, sneak: false };
+    if (mode === 'play' && (controls.isLocked || powerOpen) && game.player.alive) {
       // Kiện hàng: vòng va chạm phía trước (kiện, và đồng nghiệp cầm đầu kia), kiện nằm trên sàn là vật cản
       const hb = game.heldBulky;
       const reach = BULKY_SIZE.len / 2 + 0.35;
       const bodies: [number, number][] = hb ? [[reach - 0.3, 0.26], [reach + 0.3, 0.26]] : [];
       if (hb && hb.carriers.length >= 2) bodies.push([reach * 2, 0.28]);
       if (game.heldCart) bodies.push([CART_MOVE.reach - 0.25, 0.3], [CART_MOVE.reach + 0.25, 0.3]);
+      // Hai người khiêng, mình cầm đầu sau (người kia dẫn): đứng ở đầu bên kia của kiện, đi theo kiện
+      const follow = !!hb && hb.carriers.length >= 2 && hb.carriers[0] !== game.player.id;
       // Đang mở tủ điện: đứng yên (vẫn có thể bị phát hiện)
-      if (powerOpen) for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) player.keys.delete(k);
-      const m = player.update(dt, { canRun: game.canRun, speedMul: game.speedMul, maxSpeed: game.carrySpeed, bodies, extra: bulkySolids() });
+      if (powerOpen || follow) for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) player.keys.delete(k);
+      if (follow) player.pos = { x: hb!.pos.x + Math.sin(hb!.yaw) * BULKY_MOVE.reach, z: hb!.pos.z + Math.cos(hb!.yaw) * BULKY_MOVE.reach };
+      const m = player.update(dt, {
+        canRun: game.canRun, speedMul: game.speedMul, maxSpeed: game.carrySpeed, bodies: follow ? [] : bodies, extra: [...bulkySolids(), ...playerSolids()],
+      });
+      if (follow) m.moving = !!followPrev && Math.hypot(player.pos.x - followPrev.x, player.pos.z - followPrev.z) > 0.004;
+      followPrev = follow ? { ...player.pos } : null;
+      motion = { moving: m.moving, running: m.running, sneak: m.sneaking };
       if (powerOpen && !inBox(player.pos, POWER_ZONE)) closePower();
       game.player.pos = { ...player.pos };
       camera.getWorldDirection(tmpV);
@@ -1410,8 +1723,22 @@ function frame(now: number): void {
       game.tick(wdt);
       if (mode === 'dying') updateDeath(dt);
       else updateAutoCam(dt);
+    } else if (netMode() && (mode === 'play' || mode === 'eval')) {
+      // Chơi mạng: tạm dừng (Esc) không dừng ca của người khác
+      game.tick(wdt);
+      hud.clock(game);
+      hud.badge(game.player.name, game.holes, game.records);
     }
+    if (hostSync) {
+      hostSync.applyInputs(dt);
+      hostSync.collect(game.events);
+      hostSync.send(dt);
+    }
+    guestSync?.frame(dt, motion);
     handleEvents();
+    syncWorld();
+    reconcileHands();
+    updateRemotes(dt);
     world.setDrift(game.shift.drift);
     updateBody(dt);
     updateCoworker(dt);
@@ -1458,7 +1785,7 @@ requestAnimationFrame(frame);
 // Chỉ khi chạy npm run dev: cho script kiểm tra tự động (chụp màn hình…) truy cập trạng thái game.
 if (import.meta.env.DEV) {
   (window as unknown as Record<string, unknown>).__hd30 = {
-    camera, player, dev, devHost, get game() { return game; }, get auditorView() { return auditorView; }, get captureView() { return captureView; }, get throwAim() { return throwAim; }, get heldItem() { return heldItem; }, get coworker() { return coworker; }, openPower, hud, get world() { return world; },
+    camera, player, dev, devHost, get game() { return game; }, get net() { return net; }, get hostSync() { return hostSync; }, get guestSync() { return guestSync; }, get mode() { return mode; }, get auditorView() { return auditorView; }, get captureView() { return captureView; }, get throwAim() { return throwAim; }, get heldItem() { return heldItem; }, get coworker() { return coworker; }, openPower, hud, get world() { return world; },
     renderInfo: () => ({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles, ratio: governor.ratio, programs: renderer.info.programs?.length }),
   };
 }

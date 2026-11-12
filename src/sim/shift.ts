@@ -191,37 +191,53 @@ export class Shift {
   /** Xe đẩy hàng và xe gom rác (về chỗ cũ trong kho mỗi đêm). */
   carts: Cart[];
 
-  constructor(night: number, rng: () => number) {
+  /**
+   * players: số người chơi trong ca. Nhiều người thì việc nhân lên theo số người (trừ mốc ghi nhiệt độ và gom rác: chia nhau),
+   * mỗi việc ghi tên người được giao (Job.who = 'p1', 'p2'…), chia lần lượt cho từng người.
+   */
+  constructor(night: number, rng: () => number, players = 1) {
     this.night = night;
+    const n = Math.max(1, players);
     const k = jobCounts(night);
-    for (const id of shuffle(SECTIONS.map((s) => s.id), rng).slice(0, k.restock)) this.restockNeeded.add(id);
-    this.pile = k.restock + 1;
-    for (const id of shuffle(COLD_UNITS.map((u) => u.id), rng).slice(0, k.cold)) this.coldNeeded.add(id);
-    this.coldPile = k.cold + 1;
+    for (const id of shuffle(SECTIONS.map((s) => s.id), rng).slice(0, k.restock * n)) this.restockNeeded.add(id);
+    this.pile = this.restockNeeded.size + 1;
+    for (const id of shuffle(COLD_UNITS.map((u) => u.id), rng).slice(0, k.cold * n)) this.coldNeeded.add(id);
+    this.coldPile = this.coldNeeded.size + 1;
     // Hàng lỗi và các đoạn kệ phải quét: bộ ngẫu nhiên riêng (không làm lệch phần khác của game)
     const drng = mulberry32(hashStr(`loi/${night}/${[...this.restockNeeded].join(',')}`));
-    this.defects = pickDefects(k.defects, drng, this.restockNeeded);
+    this.defects = pickDefects(k.defects * n, drng, this.restockNeeded);
     this.defectsTotal = this.defects.size;
     // Quét: mỗi đoạn ở một dãy khác nhau (rải khắp siêu thị), không trùng kệ đang thiếu hàng
     const rows = new Set<number>();
     const scans: string[] = [];
-    for (const s of shuffle(SECTIONS.filter((x) => !this.restockNeeded.has(x.id)), drng)) {
-      if (scans.length >= k.scan) break;
+    const scanCands = shuffle(SECTIONS.filter((x) => !this.restockNeeded.has(x.id)), drng);
+    for (const s of scanCands) {
+      if (scans.length >= k.scan * n) break;
       if (rows.has(s.row)) continue;
       rows.add(s.row);
       scans.push(s.id);
+    }
+    // Nhiều người mà hết dãy: lấy thêm đoạn ở dãy đã có
+    for (const s of scanCands) {
+      if (scans.length >= k.scan * n) break;
+      if (!scans.includes(s.id)) scans.push(s.id);
     }
     this.trashFull = new Set(TRASH_BINS.map((_, i) => i));
     this.carts = CART_HOMES.map((h, i) => ({ id: i + 1, kind: h.kind, pos: { x: h.x, z: h.z }, yaw: h.yaw, pusher: null, bulky: null, boxes: 0, bags: 0 }));
 
     let id = 1;
-    const add = (kind: JobKind, target: string) => this.jobs.push({ id: id++, kind, target, who: 'p1', done: false });
-    for (const s of scans) add('scan', s);
-    for (const s of this.restockNeeded) add('restock', s);
-    for (const u of this.coldNeeded) add('coldRestock', u);
-    for (const t of k.freezer) add('freezer', String(t));
-    for (const key of this.defects.keys()) add('defect', key);
-    add('trash', 'all');
+    // Chia lần lượt cho từng người; mỗi loại việc bắt đầu từ một người khác để không ai toàn nhận việc đầu danh sách
+    let start = 0;
+    const addAll = (kind: JobKind, targets: Iterable<string>) => {
+      let i = start++;
+      for (const target of targets) this.jobs.push({ id: id++, kind, target, who: `p${(i++ % n) + 1}`, done: false });
+    };
+    addAll('scan', scans);
+    addAll('restock', this.restockNeeded);
+    addAll('coldRestock', this.coldNeeded);
+    addAll('freezer', k.freezer.map(String));
+    addAll('defect', this.defects.keys());
+    this.jobs.push({ id: id++, kind: 'trash', target: 'all', who: `p${((night - 1) % n) + 1}`, done: false });
   }
 
   /** Đánh dấu xong việc được giao khớp (kind, target). Trả về việc vừa xong (null nếu không có trong danh sách). */

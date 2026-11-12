@@ -26,18 +26,27 @@ export const LUNGE_SPEED = 6.0;
 export type AuditorEvent =
   | { type: 'heard'; at: V2 }
   | { type: 'light'; at: V2 }
-  | { type: 'count'; n: number }
-  /** Đếm đủ: bắt đầu lao tới chỗ người chơi. */
-  | { type: 'caught'; at: V2 }
+  /** who: chỉ số người đang bị đếm (trong danh sách mục tiêu truyền vào update). */
+  | { type: 'count'; n: number; who: number }
+  /** Đếm đủ: bắt đầu lao tới chỗ người chơi thứ who. */
+  | { type: 'caught'; at: V2; who: number }
   /** Tới nơi, bắt đầu nhét vào thùng. */
   | { type: 'boxing'; at: V2 }
   /** Đóng thùng xong, bê đi. */
   | { type: 'boxed'; at: V2 }
   /** Đã đặt thùng vào kho. */
   | { type: 'stored'; at: V2 }
-  | { type: 'lost' }
+  | { type: 'lost'; who: number }
   | { type: 'step' }
   | { type: 'beep' };
+
+/** Một người chơi mà Người Kiểm Kê có thể thấy / bắt (chơi nhiều người: mỗi người một mục tiêu). */
+export interface AuditTarget {
+  pos: V2;
+  alive: boolean;
+  /** Đang bật đèn pin (khi mất điện, nó thấy ánh đèn). */
+  light?: boolean;
+}
 
 /** Đang trong cảnh đóng thùng: chỗ bắt, chỗ đứng đặt thùng, ô thùng trong kho. */
 export interface Capture {
@@ -382,6 +391,8 @@ export class Auditor {
   storeIndex = 1;
   /** Độ lệch sổ 0..1 (Game đặt): càng lệch càng nghe xa, quét xa, đi tuần nhanh. */
   drift = 0;
+  /** Đang đếm người chơi thứ mấy (-1: không đếm ai). */
+  countWho = -1;
   private urgent = false;
   private lightCd = 0;
 
@@ -443,6 +454,7 @@ export class Auditor {
     if (this.state !== 'count' && this.state !== 'lunge') return;
     this.countT = 0;
     this.counted = 0;
+    this.countWho = -1;
     this.capture = null;
     this.state = 'search';
     this.stateT = 0;
@@ -464,6 +476,7 @@ export class Auditor {
     this.suspicion = null;
     this.urgent = false;
     this.countT = 0;
+    this.countWho = -1;
   }
 
   canSee(p: V2): boolean {
@@ -500,7 +513,12 @@ export class Auditor {
     return hasLOS(this.pos, p);
   }
 
-  update(dt: number, player: V2, alive: boolean, lightOn = false): void {
+  /**
+   * targets: các người chơi (chơi một mình: truyền vị trí, còn sống, đèn pin như cũ).
+   * Nhiều người: đếm người đang bị đếm nếu còn thấy, không thì người gần nhất trong tia quét.
+   */
+  update(dt: number, player: V2 | AuditTarget[], alive = true, lightOn = false): void {
+    const targets: AuditTarget[] = Array.isArray(player) ? player : [{ pos: player, alive, light: lightOn }];
     this.t += dt;
     this.stateT += dt;
     this.moving = false;
@@ -514,11 +532,31 @@ export class Auditor {
     }
 
     // --- Phát hiện bằng tia quét ---
-    if (alive && this.canSee(player)) {
-      if (this.state !== 'count') {
+    let who = -1;
+    if (this.state === 'count' && this.countWho >= 0) {
+      const t = targets[this.countWho];
+      if (t && t.alive && this.canSee(t.pos)) who = this.countWho;
+    }
+    if (who < 0) {
+      let bd = Infinity;
+      targets.forEach((t, i) => {
+        if (!t.alive || !this.canSee(t.pos)) return;
+        const d = dist(this.pos, t.pos);
+        if (d < bd) {
+          bd = d;
+          who = i;
+        }
+      });
+    }
+    if (who >= 0) {
+      const player = targets[who].pos;
+      if (this.state !== 'count' || this.countWho !== who) {
+        // Đang đếm người khác mà mất dấu người đó: người kia thoát, đếm lại từ đầu cho người mới
+        if (this.state === 'count' && this.countWho >= 0) this.events.push({ type: 'lost', who: this.countWho });
         this.state = 'count';
         this.countT = 0;
         this.counted = 0;
+        this.countWho = who;
         this.path = [];
       }
       this.lostT = 0;
@@ -527,12 +565,12 @@ export class Auditor {
       const n = this.countT >= this.tune.countTime / 2 ? 2 : 1;
       if (n > this.counted) {
         this.counted = n;
-        this.events.push({ type: 'count', n });
+        this.events.push({ type: 'count', n, who });
       }
       const h = headingTo(this.pos, player);
       this.beam = h;
       this.heading = turnToward(this.heading, h, 4 * dt);
-      if (this.countT >= this.tune.countTime) this.startCapture(player);
+      if (this.countT >= this.tune.countTime) this.startCapture(player, who);
       return;
     }
     if (this.state === 'count') {
@@ -540,14 +578,17 @@ export class Auditor {
       if (this.lastSeen) this.beam = turnToward(this.beam, headingTo(this.pos, this.lastSeen), 3 * dt);
       if (this.lostT > 0.7) {
         this.countT = 0;
-        this.events.push({ type: 'lost' });
+        this.events.push({ type: 'lost', who: Math.max(0, this.countWho) });
+        this.countWho = -1;
         this.goInvestigate(this.lastSeen ?? this.pos);
       }
       return;
     }
 
     // --- Mất điện: thấy ánh đèn pin thì chạy tới chỗ đó ---
-    if (this.blackout && alive && lightOn && this.lightCd <= 0 && this.state !== 'alert' && this.seesLight(player)) {
+    const lit = this.blackout && this.lightCd <= 0 && this.state !== 'alert' ? targets.find((t) => t.alive && t.light && this.seesLight(t.pos)) : undefined;
+    if (lit) {
+      const player = lit.pos;
       this.lightCd = 2;
       const ang = this.rng() * Math.PI * 2;
       const s = walkablePoint({ x: player.x + Math.sin(ang), z: player.z + Math.cos(ang) }, player);
@@ -628,17 +669,18 @@ export class Auditor {
     this.stateT = 0;
   }
 
-  private startCapture(player: V2): void {
+  private startCapture(player: V2, who = 0): void {
     const at = { ...player };
     this.capture = { at, stand: storageStand(this.storeIndex), slot: storageSlot(this.storeIndex) };
     this.countT = 0;
     this.counted = 0;
+    this.countWho = -1;
     // Dừng cách người chơi 0,75 m
     const d = dist(this.pos, at);
     const stop = d > 0.8 ? { x: at.x + ((this.pos.x - at.x) / d) * 0.75, z: at.z + ((this.pos.z - at.z) / d) * 0.75 } : { ...this.pos };
     this.path = pathClear(this.pos, stop) ? [stop] : planPath(this.pos, stop);
     this.setState('lunge');
-    this.events.push({ type: 'caught', at: { ...at } });
+    this.events.push({ type: 'caught', at: { ...at }, who });
   }
 
   private updateCapture(dt: number): void {

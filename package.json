@@ -8,10 +8,13 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc",
-    "sim:test": "node scripts/sim-smoke.ts"
+    "sim:test": "node scripts/sim-smoke.ts",
+    "serve": "node server/serve.mjs",
+    "play": "npm run build && node server/serve.mjs"
   },
   "dependencies": {
-    "three": "^0.169.0"
+    "three": "^0.169.0",
+    "ws": "^8.22.2"
   },
   "devDependencies": {
     "@types/three": "^0.169.0",

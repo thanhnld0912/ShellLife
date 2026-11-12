@@ -31,10 +31,12 @@ export class Hud {
     const s = g.shift;
     const open = s.openOrders;
     const cans = s.litter.length;
-    const left = s.jobsLeft.length;
+    // Chơi nhiều người: chỉ đếm việc được giao cho mình
+    const mine = s.jobs.filter((j) => j.who === g.player.id);
+    const left = mine.filter((j) => !j.done).length;
     el.hidden = false;
     el.innerHTML =
-      `<div class="${left ? 'jobs' : 'jobs done'}"><span>VIỆC ĐƯỢC GIAO ${s.jobsDone}/${s.jobs.length}${left ? '' : ' · XONG'}</span><b>Tab: bìa kẹp + bản đồ</b></div>` +
+      `<div class="${left ? 'jobs' : 'jobs done'}"><span>VIỆC ĐƯỢC GIAO ${mine.length - left}/${mine.length}${left ? '' : ' · XONG'}</span><b>Tab: bìa kẹp + bản đồ</b></div>` +
       open
         .slice(0, 4)
         .map((o) => {
@@ -139,7 +141,10 @@ export class Hud {
     const s = g.shift;
     const holes = [0, 1, 2].map((i) => (i < g.holes ? '●' : '○')).join('');
     const marks: MapMark[] = [];
-    const items = s.jobs
+    const mine = s.jobs.filter((j) => j.who === g.player.id);
+    const mineDone = mine.filter((j) => j.done).length;
+    const crew = g.players.length > 1 ? ` · cả nhóm ${s.jobsDone}/${s.jobs.length}` : '';
+    const items = mine
       .map((j, i) => {
         const n = String(i + 1);
         const color = JOB_COLORS[j.kind];
@@ -170,9 +175,9 @@ export class Hud {
       .join('');
     el.innerHTML = `<div class="clip"></div><div class="paper receipt">
       <h4>Phân công · Đêm ${g.night}/${MAX_NIGHTS} · ${s.clock()}</h4>
-      <div class="sm">${esc(g.name.toUpperCase())} · thẻ ${holes} · hồ sơ ${g.records}/${RECORDS_PER_HOLE}${g.voucher ? ' · có PHIẾU KHEN' : ''}</div>
+      <div class="sm">${esc(g.player.name.toUpperCase())} · thẻ ${holes} · hồ sơ ${g.records}/${RECORDS_PER_HOLE}${g.voucher ? ' · có PHIẾU KHEN' : ''}</div>
       ${storeMapSvg(g, marks, me, yaw)}
-      <div class="sec">VIỆC ĐƯỢC GIAO ${s.jobsDone}/${s.jobs.length} <small>06:00 còn việc chưa xong: bấm 1 lỗ</small></div>
+      <div class="sec">${crew ? 'VIỆC CỦA BẠN' : 'VIỆC ĐƯỢC GIAO'} ${mineDone}/${mine.length}${crew} <small>06:00 ${crew ? 'cả nhóm ' : ''}còn việc chưa xong: bấm 1 lỗ</small></div>
       <ol class="jobs">${items}</ol>
       ${s.orders.length ? `<div class="sec">PHIẾU PHÁT SINH <small>trễ hạn: ghi hồ sơ (${RECORDS_PER_HOLE} lần = 1 lỗ)</small></div><ol class="jobs">${orderItems}</ol>` : ''}
       <div class="sm">06:00 có mặt ở MÁY CHẤM CÔNG (kho) · Tab: cất phiếu</div></div><div class="thumb"></div>`;

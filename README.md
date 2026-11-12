@@ -22,6 +22,28 @@ Nếu `npm install` báo lỗi mạng `ENETUNREACH`, chạy lại với IPv4:
 $env:NODE_OPTIONS='--dns-result-order=ipv4first'; npm install
 ```
 
+## Chơi cùng bạn (bản thử, 2 người)
+
+Hai người phải mở **cùng một trang web** do máy bạn chạy:
+
+1. Máy bạn: `npm run play` (build rồi chạy server ở cổng 8080: phục vụ trang game và chuyển tin chơi mạng ở `/net`).
+   Đang sửa code thì `npm run dev` cũng có sẵn chơi mạng.
+2. Người chơi cùng:
+   - **Cùng mạng wifi:** mở địa chỉ `http://192.168.x.x:8080` mà server in ra.
+   - **Ở xa (không cần thuê server):** cài Cloudflare Tunnel (`winget install --id Cloudflare.cloudflared`), chạy
+     `cloudflared tunnel --url http://localhost:8080`, gửi đường link `https://….trycloudflare.com` cho bạn. Chính bạn cũng mở link đó.
+3. Menu → Chơi → nhập tên → **Tạo phòng**. Gửi mã 4 chữ (hoặc đường link `?room=MÃ`) cho bạn; bạn nhập tên → **Vào phòng**.
+4. Đủ 2 người, chủ phòng bấm **Bắt đầu ca**.
+
+Luật khi chơi 2 người:
+- Mỗi người **một danh sách việc riêng** (tổng việc gấp đôi, chia lần lượt); bìa kẹp chỉ hiện việc của mình kèm tiến độ cả nhóm. Làm giúp việc của người kia vẫn được tính.
+- **Thẻ, hồ sơ, lương chung cả nhóm.** 06:00 ai còn sống cũng phải có mặt ở máy chấm công.
+- Người Kiểm Kê đếm / bắt **từng người**. Một người bị đóng thùng thì xem camera tới hết đêm (đêm sau vào ca lại); cả hai bị bắt thì hết ca.
+- Khiêng kiện nước 2 người thật: người cầm trước dẫn đường, người cầm sau tự đi theo đầu kia của kiện.
+- Esc (tạm dừng) không dừng ca của người kia. Bảng sự kiện (P) chỉ chủ phòng mở được.
+
+Cách hoạt động ([src/client/net.ts](src/client/net.ts), [server/relay.mjs](server/relay.mjs)): máy chủ phòng chạy toàn bộ ca làm việc; máy vào phòng giữ bản sao, gửi vị trí và thao tác lên, nhận lại trạng thái ~15 lần/giây. Server chỉ giữ phòng và chuyển tin. Chủ phòng thoát là phòng đóng.
+
 ## Siêu thị và luật trong ca
 
 - **Bố cục 44 × 34 m kiểu mê cung** (xem sơ đồ đầu [src/sim/layout.ts](src/sim/layout.ts)):
@@ -110,8 +132,10 @@ Mặc định game tạm dừng khi bảng mở. Bỏ chọn ô "Tạm dừng" n
 | Lệnh | Việc |
 |---|---|
 | `npm run typecheck` | Kiểm tra kiểu TypeScript |
-| `npm run sim:test` | Kiểm tra logic game không cần trình duyệt (tuần tra, nghe, đếm, việc được giao, ghi hồ sơ, rác, xe đẩy, sửa điện) |
+| `npm run sim:test` | Kiểm tra logic game không cần trình duyệt (tuần tra, nghe, đếm, việc được giao, ghi hồ sơ, rác, xe đẩy, sửa điện, 2 người chơi) |
 | `npm run build` | Đóng gói vào `dist/` |
+| `npm run play` | Build rồi chạy server chơi mạng (cổng 8080, đổi bằng biến `PORT`) |
+| `npm run serve` | Chạy server với bản đã build sẵn |
 
 ## Cấu trúc
 
@@ -123,7 +147,8 @@ src/
     shift.ts    Ca làm việc, đồng hồ, danh sách việc được giao, rác, xe đẩy
     game.ts     Lõi game: việc, tiếng động, phiếu đánh giá, chết
   render/     Hình ảnh 3D (khối xám, sau thay bằng model Blender)
-  client/     Điều khiển, âm thanh (nhạc nền tổng hợp, kênh âm lượng), menu + cài đặt (menu.ts, settings.ts), giao diện, bản đồ trên bìa kẹp (storeMap.ts)
+  client/     Chơi mạng (net.ts), điều khiển, âm thanh (nhạc nền tổng hợp, kênh âm lượng), menu + cài đặt (menu.ts, settings.ts), giao diện, bản đồ trên bìa kẹp (storeMap.ts)
+server/                Server chơi mạng: relay.mjs (phòng, chuyển tin), serve.mjs (phục vụ dist/ + /net)
 scripts/sim-smoke.ts   Kiểm tra logic
 docs/                  Kế hoạch triển khai
 ```

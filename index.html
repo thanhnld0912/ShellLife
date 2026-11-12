@@ -51,7 +51,7 @@
     <div id="menu" class="overlay menu">
       <div class="menu-shell">
         <div class="brand">
-          <p class="eyebrow">Bản thử giai đoạn 1 · 1 người chơi</p>
+          <p class="eyebrow">Bản thử giai đoạn 1 · 1–2 người chơi</p>
           <h1>Hợp Đồng <span>30 Đêm</span></h1>
           <p class="lead">Ca đêm ở một siêu thị không bao giờ mở cửa. Làm đủ <b>việc được giao</b> sau lưng Người Kiểm Kê. Bị tia quét đỏ giữ 2 giây là bị đóng thùng.</p>
         </div>
@@ -71,7 +71,27 @@
             <button id="start">Nhận ca</button>
           </div>
           <p class="note" id="play-info"></p>
+          <div class="mp">
+            <h3>Chơi cùng bạn <small>bản thử · 2 người</small></h3>
+            <div class="start-row">
+              <button id="mp-create" class="ghost">Tạo phòng</button>
+              <input id="mp-code" maxlength="4" placeholder="MÃ PHÒNG" autocomplete="off" />
+              <button id="mp-join" class="ghost">Vào phòng</button>
+            </div>
+            <p class="note" id="mp-info">Một người tạo phòng rồi gửi mã (hoặc đường link) cho người kia. Hai người phải mở cùng một trang web.</p>
+          </div>
           <div class="row-btns"><button class="ghost" data-go="main">← Quay lại</button></div>
+        </section>
+        <section class="menu-screen" data-screen="lobby" hidden>
+          <h2>Phòng <span id="lobby-code" class="room-code">····</span></h2>
+          <p class="note">Gửi mã phòng cho bạn (Chơi → nhập mã → Vào phòng), hoặc gửi đường link:</p>
+          <input id="lobby-link" class="room-link" readonly />
+          <ol id="lobby-list" class="lobby-list"></ol>
+          <p class="note" id="lobby-info"></p>
+          <div class="row-btns">
+            <button id="lobby-start" hidden disabled>Bắt đầu ca</button>
+            <button class="ghost" id="lobby-leave">Rời phòng</button>
+          </div>
         </section>
       </div>
     </div>

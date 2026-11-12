@@ -1,5 +1,8 @@
 // Lõi game: giữ toàn bộ "sự thật" của ca làm việc. Không phụ thuộc Three.js,
 // để sau này chuyển lên server cho chế độ nhiều người.
+//
+// Nhiều người chơi: `players` là danh sách nhân viên trong ca; `player` là người đang thao tác (mặc định người đầu tiên).
+// Các hàm việc (lấy hàng, xếp kệ…) luôn làm cho `player`; muốn làm thay mặt người khác thì gọi qua as(i, () => …).
 
 import type { V2 } from './geometry.ts';
 import { inBox, inflate } from './geometry.ts';
@@ -77,6 +80,40 @@ export interface BreakerPanel {
   on: boolean[];
 }
 
+/**
+ * Một nhân viên trong ca.
+ * carry: đang ôm thùng hàng khô (từ kho), thùng hàng lạnh (từ kho lạnh), hoặc không ôm gì.
+ * clockedIn: đã chấm công vào ca (chưa chấm thì chưa làm việc được); lateIn: chấm sau hạn.
+ * stamina: thể lực 0..1 · exhausted: vừa cạn thể lực (chưa chạy lại được) · hand: món đang cầm từ kệ.
+ * sick / dizzy: còn bao nhiêu giây đau bụng / chóng mặt (ăn phải hàng lỗi).
+ * yaw: hướng nhìn (hướng tới = (sin yaw, cos yaw)) · sneak: đang đi rón rén (giữ C) · sheet: đang xem phiếu việc (Tab).
+ * bulky: mã kiện hàng đang khiêng / kéo · cart: mã xe đang đẩy · bags: số túi rác đang xách tay (tối đa 2).
+ * moving / running: đang đi / chạy (để người khác thấy đúng động tác) · gone: đã rời phòng (chơi mạng).
+ */
+export interface PlayerState {
+  id: string;
+  name: string;
+  pos: V2; alive: boolean; light: boolean; carry: 'dry' | 'cold' | null; clockedIn: boolean; lateIn: boolean;
+  stamina: number; exhausted: boolean; hand: Held | null; sick: number; dizzy: number;
+  yaw: number; sneak: boolean; sheet: boolean; bulky: number | null; cart: number | null; bags: number;
+  moving: boolean; running: boolean; gone: boolean;
+}
+
+/** Chỗ đứng đầu ca của người chơi thứ i (trong phòng nghỉ, xếp hàng ngang). */
+export function playerSpawn(i: number): V2 {
+  return { x: PLAYER_SPAWN.x + 1.2 * i, z: PLAYER_SPAWN.z };
+}
+
+function newPlayer(i: number, name: string): PlayerState {
+  return {
+    id: `p${i + 1}`, name,
+    pos: playerSpawn(i), alive: true, light: false, carry: null, clockedIn: false, lateIn: false,
+    stamina: 1, exhausted: false, hand: null, sick: 0, dizzy: 0,
+    yaw: 0, sneak: false, sheet: false, bulky: null, cart: null, bags: 0,
+    moving: false, running: false, gone: false,
+  };
+}
+
 /** Đang cầm trên tay một món lấy từ kệ (key = mã ô hàng). */
 export interface Held {
   key: string;
@@ -139,13 +176,14 @@ export type GameEvent =
   | { type: 'light'; at: V2 }
   | { type: 'power'; on: boolean }
   | { type: 'noise'; at: V2; radius: number }
-  | { type: 'count'; n: number }
-  | { type: 'lost' }
+  /** who: mã người chơi (p1, p2…) bị đếm / thoát. */
+  | { type: 'count'; n: number; who: string }
+  | { type: 'lost'; who: string }
   | { type: 'step'; at: V2 }
   | { type: 'beep'; at: V2 }
   | { type: 'eval'; ev: Evaluation }
-  /** slot: ô trong kho sẽ đặt thùng mang tên người chết. */
-  | { type: 'dead'; reason: 'scan' | 'holes'; slot: V2 }
+  /** slot: ô trong kho sẽ đặt thùng mang tên người chết · who / name: người chết. */
+  | { type: 'dead'; reason: 'scan' | 'holes'; slot: V2; who: string; name: string }
   /** Người Kiểm Kê tới nơi, bắt đầu nhét người vào thùng tại `at`. */
   | { type: 'boxing'; at: V2 }
   /** Đóng thùng xong, bắt đầu bê về kho. */
@@ -155,7 +193,7 @@ export type GameEvent =
   /** Bắt đầu đêm mới mà không qua phiếu đánh giá (nhảy đêm trong bảng sự kiện). */
   | { type: 'night' }
   /** Chấm công vào ca ở máy chấm công (late: sau hạn). */
-  | { type: 'clockIn'; late: boolean }
+  | { type: 'clockIn'; late: boolean; who: string }
   /** Thông báo của bảng sự kiện (chỉ để hiện cho người thử). */
   | { type: 'dev'; text: string }
   /** Máy in giao phiếu việc mới / phiếu quá hạn / phiếu đã xong. */
@@ -163,7 +201,7 @@ export type GameEvent =
   | { type: 'orderLate'; order: Order }
   | { type: 'orderDone'; order: Order }
   /** Đau bụng: rên / ợ thành tiếng ở vị trí người chơi. */
-  | { type: 'groan'; at: V2 }
+  | { type: 'groan'; at: V2; who: string }
   /** Kiện hàng cồng kềnh: kéo lê ken két trên sàn / bị thả phịch xuống. */
   | { type: 'scrape'; at: V2 }
   | { type: 'thud'; at: V2 }
@@ -236,6 +274,8 @@ export interface Blackout { id: number; start: number; end: number }
 
 export interface GameOptions {
   seed?: number;
+  /** Tên các nhân viên trong ca (chơi mạng). Mặc định: chỉ một người, tên là `name`. */
+  players?: string[];
   events?: Partial<EventConfig>;
   tuning?: Partial<AuditorTuning>;
 }
@@ -246,22 +286,15 @@ export class Game {
   holes = 0;
   shift: Shift;
   auditor: Auditor;
-  /** carry: đang ôm thùng hàng khô (từ kho), thùng hàng lạnh (từ kho lạnh), hoặc không ôm gì. */
-  /** clockedIn: đã chấm công vào ca (chưa chấm thì chưa làm việc được); lateIn: chấm sau hạn. */
-  /** stamina: thể lực 0..1 · exhausted: vừa cạn thể lực (chưa chạy lại được) · hand: món đang cầm từ kệ. */
-  /** sick / dizzy: còn bao nhiêu giây đau bụng / chóng mặt (ăn phải hàng lỗi). */
-  /** yaw: hướng nhìn (hướng tới = (sin yaw, cos yaw)) · sneak: đang đi rón rén (giữ C) · sheet: đang xem phiếu việc (Tab). */
-  /** bulky: mã kiện hàng đang khiêng / kéo. (yaw, sneak, sheet sau này gửi cho người chơi khác để hiện đúng động tác.) */
-  /** cart: mã xe đang đẩy · bags: số túi rác đang xách tay (tối đa 2). */
-  player: {
-    pos: V2; alive: boolean; light: boolean; carry: 'dry' | 'cold' | null; clockedIn: boolean; lateIn: boolean;
-    stamina: number; exhausted: boolean; hand: Held | null; sick: number; dizzy: number;
-    yaw: number; sneak: boolean; sheet: boolean; bulky: number | null; cart: number | null; bags: number;
-  } = {
-    pos: { ...PLAYER_SPAWN }, alive: true, light: false, carry: null, clockedIn: false, lateIn: false,
-    stamina: 1, exhausted: false, hand: null, sick: 0, dizzy: 0,
-    yaw: 0, sneak: false, sheet: false, bulky: null, cart: null, bags: 0,
-  };
+  /** Các nhân viên trong ca (chơi một mình: một người). */
+  players: PlayerState[];
+  /** Người đang thao tác: các hàm việc làm cho người này (xem as()). */
+  player: PlayerState;
+  /**
+   * Bản sao trên máy người vào phòng (chơi mạng): không tự chạy ca, không tự gây tiếng động; trạng thái lấy từ máy chủ phòng.
+   * Các hàm việc vẫn chạy trên bản sao để thấy kết quả ngay, máy chủ phòng làm lại thật và gửi về.
+   */
+  mirror = false;
   /** Số lần bị ghi hồ sơ đang tích (chưa đủ 3 để quy ra lỗ), cộng dồn qua các đêm. */
   records = 0;
   /** Ghi hồ sơ trong đêm nay (lý do). */
@@ -314,11 +347,30 @@ export class Game {
     this.orderRng = mulberry32((seed ^ 0x9e3779b9) >>> 0);
     this.eventCfg = { ...DEFAULT_EVENTS, ...o.events };
     this.tuneOverride = { ...o.tuning };
-    this.shift = new Shift(1, this.rng);
+    this.players = (o.players?.length ? o.players : [name]).map((n, i) => newPlayer(i, n));
+    this.player = this.players[0];
+    this.shift = new Shift(1, this.rng, this.players.length);
     this.routeSeed = Math.floor(this.rng() * ROUTE_STYLES.length);
     this.auditor = this.makeAuditor();
     this.blackouts = this.planBlackouts();
     this.orderPlan = this.planOrders();
+  }
+
+  /** Làm một việc thay mặt người chơi thứ i (các hàm việc dùng `player`). */
+  as<T>(i: number, fn: () => T): T {
+    const prev = this.player;
+    this.player = this.players[i] ?? prev;
+    try {
+      return fn();
+    } finally {
+      this.player = prev;
+    }
+  }
+
+  /** Tên cả nhóm để loa đọc: "Lan và Minh". */
+  get crewName(): string {
+    const here = this.players.filter((p) => !p.gone);
+    return here.length > 1 ? here.map((p) => p.name).join(' và ') : this.name;
   }
 
   /** Rải phiếu việc từ 22:30 đến 05:00, không quá dồn. */
@@ -433,32 +485,43 @@ export class Game {
     return { ok: true, msg: late ? 'Có điện lại (trễ hạn phiếu sửa điện).' : 'Có điện lại!', order: true };
   }
 
+  /** Mục tiêu cho Người Kiểm Kê: mọi nhân viên còn trong ca. */
+  private targets(live: boolean) {
+    return this.players.map((p) => ({ pos: p.pos, alive: live && p.alive && !p.gone && !this.dev.invisible, light: p.light }));
+  }
+
   tick(dt: number): void {
+    if (this.mirror) {
+      // Bản sao: chỉ cho đồng hồ chạy mượt giữa hai lần nhận trạng thái
+      if (this.phase === 'shift') this.shift.minutes = Math.min(SHIFT_MINUTES, this.shift.minutes + dt / REAL_PER_MIN);
+      return;
+    }
     this.auditor.blackout = !this.power;
     if (this.phase === 'dead') {
       // Người chết chỉ xem: Người Kiểm Kê vẫn đi tuần.
-      this.auditor.update(dt, this.player.pos, false);
+      this.auditor.update(dt, this.targets(false));
       this.drainAuditor();
       return;
     }
     if (this.phase !== 'shift') return;
     this.shift.minutes += dt / REAL_PER_MIN;
     // Chấm công vào ca: đứng ở máy chấm công trong kho
-    if (!this.player.clockedIn && this.player.alive && inBox(this.player.pos, CLOCK_ZONE)) {
-      this.player.clockedIn = true;
-      this.player.lateIn = this.shift.minutes > this.eventCfg.clockInBy;
-      this.events.push({ type: 'clockIn', late: this.player.lateIn });
+    for (const p of this.players) {
+      if (p.clockedIn || !p.alive || p.gone || !inBox(p.pos, CLOCK_ZONE)) continue;
+      p.clockedIn = true;
+      p.lateIn = this.shift.minutes > this.eventCfg.clockInBy;
+      this.events.push({ type: 'clockIn', late: p.lateIn, who: p.id });
     }
     this.schedule();
     this.updateOrders(dt);
-    this.auditor.update(dt, this.player.pos, this.player.alive && !this.dev.invisible, this.player.light);
+    this.auditor.update(dt, this.targets(true));
     this.drainAuditor();
     if (this.phase === 'shift' && this.shift.minutes >= SHIFT_MINUTES) this.endShift();
   }
 
   /** Người chơi gây tiếng động. radius: bán kính nghe (m), error: sai số vị trí (m). */
   noise(at: V2, radius: number, error: number): void {
-    if (this.phase !== 'shift') return;
+    if (this.mirror || this.phase !== 'shift') return;
     this.events.push({ type: 'noise', at: { ...at }, radius });
     if (this.auditor.hear(at, radius, error)) this.shift.stats.heard++;
   }
@@ -466,8 +529,11 @@ export class Game {
   reportMotion(dt: number, moving: boolean, running: boolean, sneaking = false): void {
     if (this.phase !== 'shift') return;
     this.player.sneak = sneaking;
+    this.player.moving = moving;
+    this.player.running = running;
     this.updateBulky(dt, moving);
     this.updateCart(dt, moving);
+    if (this.mirror) return;
     if (!moving) this.shift.stats.idleSec += dt;
     if (running) this.shift.stats.runSec += dt;
     const pl = this.player;
@@ -483,7 +549,7 @@ export class Game {
       this.groanT -= dt;
       if (this.groanT <= 0 && pl.sick > 0) {
         this.groanT = 6 + this.rng() * 5;
-        this.events.push({ type: 'groan', at: { ...pl.pos } });
+        this.events.push({ type: 'groan', at: { ...pl.pos }, who: pl.id });
         this.noise({ ...pl.pos }, 9, 2);
       }
     }
@@ -539,13 +605,13 @@ export class Game {
     return null;
   }
 
-  /** Cầm một đầu kiện hàng. who: 'p1' = người chơi này; người khác (sau này qua mạng, hoặc đồng nghiệp ảo) cầm đầu kia. */
-  grabBulky(id: number, who = 'p1'): TaskResult {
+  /** Cầm một đầu kiện hàng. who: mặc định người đang thao tác; 'ban' = đồng nghiệp ảo (bảng sự kiện) cầm đầu kia. */
+  grabBulky(id: number, who = this.player.id): TaskResult {
     const b = this.shift.bulky.find((x) => x.id === id);
     if (!b || b.done) return { ok: false, msg: '' };
     if (b.carriers.includes(who)) return { ok: false, msg: '' };
     if (b.carriers.length >= 2) return { ok: false, msg: 'Kiện này đã đủ 2 người khiêng.' };
-    if (who === 'p1') {
+    if (who === this.player.id) {
       if (this.player.bulky !== null) return { ok: false, msg: '' };
       const busy = this.busyMsg();
       if (busy) return { ok: false, msg: busy };
@@ -568,11 +634,11 @@ export class Game {
   }
 
   /** Buông tay khỏi kiện hàng. Không còn ai khiêng thì kiện rơi phịch xuống (ồn), nằm lại chỗ đó. */
-  releaseBulky(who = 'p1'): void {
-    const b = who === 'p1' ? this.heldBulky : this.shift.bulky.find((x) => x.carriers.includes(who));
+  releaseBulky(who = this.player.id): void {
+    const b = who === this.player.id ? this.heldBulky : this.shift.bulky.find((x) => x.carriers.includes(who));
     if (!b) return;
     b.carriers = b.carriers.filter((c) => c !== who);
-    if (who === 'p1') this.player.bulky = null;
+    for (const p of this.players) if (p.id === who) p.bulky = null;
     if (!b.carriers.length && !b.done && this.phase === 'shift') {
       this.events.push({ type: 'thud', at: { ...b.pos } });
       this.noise({ ...b.pos }, 8, 1.5);
@@ -594,7 +660,7 @@ export class Game {
     b.carriers = [];
     b.pos = { ...PROMO_SLOTS[n % PROMO_SLOTS.length] };
     b.yaw = Math.PI / 2;
-    this.player.bulky = null;
+    for (const p of this.players) if (p.bulky === b.id) p.bulky = null;
     this.noise({ ...b.pos }, 4, 1);
     this.completeOrder((o) => o.kind === 'bulky');
     return { ok: true, msg: 'Đã đặt kiện nước ở ĐẢO KHUYẾN MÃI', order: true };
@@ -609,7 +675,7 @@ export class Game {
   }
 
   /** Cầm tay đẩy xe. Túi rác đang xách thì bỏ luôn vào xe rác. */
-  grabCart(id: number, who = 'p1'): TaskResult {
+  grabCart(id: number, who = this.player.id): TaskResult {
     const c = this.shift.carts.find((x) => x.id === id);
     if (!c) return { ok: false, msg: '' };
     if (c.pusher && c.pusher !== who) return { ok: false, msg: 'Có người đang đẩy xe này.' };
@@ -669,7 +735,7 @@ export class Game {
         b.yaw = c.yaw;
       }
     }
-    if (!moving) return;
+    if (!moving || this.mirror) return;
     this.cartNoiseT -= dt;
     if (this.cartNoiseT > 0) return;
     this.cartNoiseT = CART_MOVE.rattleEvery;
@@ -740,10 +806,12 @@ export class Game {
   private updateBulky(dt: number, moving: boolean): void {
     const b = this.heldBulky;
     if (!b) return;
+    // Hai người khiêng: người cầm trước (người dẫn) quyết định kiện đi đâu, người kia đi theo đầu bên kia
+    if (b.carriers[0] !== this.player.id) return;
     const pl = this.player;
     b.yaw = pl.yaw;
     b.pos = { x: pl.pos.x + Math.sin(pl.yaw) * BULKY_MOVE.reach, z: pl.pos.z + Math.cos(pl.yaw) * BULKY_MOVE.reach };
-    if (!moving) return;
+    if (!moving || this.mirror) return;
     this.bulkyNoiseT -= dt;
     if (this.bulkyNoiseT > 0) return;
     if (b.carriers.length >= 2) {
@@ -1050,7 +1118,7 @@ export class Game {
       : kind === 'bulky' ? 'đưa kiện nước suối trong kho ra đảo khuyến mãi. Kiện nặng: hai người khiêng, hoặc chở bằng xe đẩy hàng'
       : kind === 'power' ? 'sự cố mất điện. Bật lại cầu dao ở tủ điện tổng trong phòng điện, theo đúng sơ đồ'
       : 'đơn gấp, mang một thùng hàng từ kho ra quầy';
-    this.announce(`Phiếu việc cho nhân viên ${this.name}: ${what}. Hạn ${clockVi(o.due)}.`);
+    this.announce(`Phiếu việc cho nhân viên ${this.crewName}: ${what}. Hạn ${clockVi(o.due)}.`);
     return o;
   }
 
@@ -1096,7 +1164,7 @@ export class Game {
       if (!o.late && s.minutes > o.due) {
         o.late = true;
         this.events.push({ type: 'orderLate', order: o });
-        this.announce(`Phiếu việc quá hạn: ${orderText(o).toLowerCase().replace(/ · /g, ', ')}. Ghi hồ sơ nhân viên ${this.name}.`);
+        this.announce(`Phiếu việc quá hạn: ${orderText(o).toLowerCase().replace(/ · /g, ', ')}. Ghi hồ sơ nhân viên ${this.crewName}.`);
       }
       if (o.late) late++;
     }
@@ -1127,8 +1195,9 @@ export class Game {
         `Ca đêm thứ ${numberVi(this.night)} bắt đầu. Nhân viên chấm công vào ca tại máy chấm công trong kho trước ${clockOf(this.eventCfg.clockInBy).replace(':', ' giờ ')}.`,
       ),
     );
-    this.once('lateIn', m >= this.eventCfg.clockInBy && !this.player.clockedIn && this.eventCfg.clockInRequired, () =>
-      this.announce(`Nhân viên ${this.name} chưa chấm công vào ca. Ghi nhận: đi trễ.`),
+    const notIn = this.players.filter((p) => !p.gone && !p.clockedIn);
+    this.once('lateIn', m >= this.eventCfg.clockInBy && notIn.length > 0 && this.eventCfg.clockInRequired, () =>
+      this.announce(`Nhân viên ${this.players.length > 1 ? notIn.map((p) => p.name).join(' và ') : this.name} chưa chấm công vào ca. Ghi nhận: đi trễ.`),
     );
     this.once('auditor', m >= this.eventCfg.auditorStart, () => {
       this.auditor.activate();
@@ -1141,8 +1210,8 @@ export class Game {
       const left = this.shift.jobsLeft.length;
       this.announce(
         left
-          ? `Nhân viên ${this.name}: còn ${numberVi(left)} việc được giao chưa xong.`
-          : `Nhân viên ${this.name}: đã xong việc được giao.`,
+          ? `Nhân viên ${this.crewName}: còn ${numberVi(left)} việc được giao chưa xong.`
+          : `Nhân viên ${this.crewName}: đã xong việc được giao.`,
       );
     });
     this.once('trash', m >= 330 && this.shift.jobs.some((j) => j.kind === 'trash' && !j.done), () =>
@@ -1193,21 +1262,23 @@ export class Game {
           break;
         case 'count':
           if (e.n === 1) this.shift.stats.seen++;
-          this.events.push({ type: 'count', n: e.n });
+          this.events.push({ type: 'count', n: e.n, who: this.players[e.who]?.id ?? 'p1' });
           break;
         case 'lost':
-          this.events.push({ type: 'lost' });
+          this.events.push({ type: 'lost', who: this.players[e.who]?.id ?? 'p1' });
           break;
-        case 'caught':
+        case 'caught': {
+          const who = this.players[e.who] ? e.who : 0;
           if (this.dev.noDeath) {
             this.auditor.release();
-            this.events.push({ type: 'lost' });
+            this.events.push({ type: 'lost', who: this.players[who].id });
             this.events.push({ type: 'dev', text: 'Bị đếm đủ 2 giây · đang bật KHÔNG CHẾT nên được tha' });
           } else {
-            this.carryingName = this.name;
-            this.die('scan');
+            this.carryingName = this.players[who].name;
+            this.die('scan', who);
           }
           break;
+        }
         case 'boxing':
           this.events.push({ type: 'boxing', at: e.at });
           break;
@@ -1228,18 +1299,27 @@ export class Game {
     this.auditor.events.length = 0;
   }
 
-  private die(reason: 'scan' | 'holes'): void {
-    this.player.hand = null;
-    this.releaseBulky();
-    this.player.sick = this.player.dizzy = 0;
+  /**
+   * Người chơi thứ i chết (bị đếm đủ, hoặc thẻ đủ 3 lỗ). Chơi nhiều người: người còn lại vẫn làm tiếp ca;
+   * ca chỉ dừng (phase 'dead') khi không còn ai.
+   */
+  private die(reason: 'scan' | 'holes', i = Math.max(0, this.players.indexOf(this.player))): void {
+    const p = this.players[i];
+    this.as(i, () => {
+      this.releaseBulky();
+      this.releaseCart();
+    });
+    p.hand = null;
+    p.sick = p.dizzy = 0;
     if (this.phase === 'dead') return;
-    this.phase = 'dead';
-    this.player.alive = false;
+    if (reason === 'scan' && !p.alive) return;
+    p.alive = false;
     // Giữ một ô trong kho cho thùng mang tên người này
     const slot = storageSlot(this.storedCount);
     this.storedCount++;
     this.auditor.storeIndex = this.storedCount;
-    this.events.push({ type: 'dead', reason, slot });
+    this.events.push({ type: 'dead', reason, slot, who: p.id, name: p.name });
+    if (reason === 'scan' && this.players.every((q) => !q.alive || q.gone)) this.phase = 'dead';
   }
 
   /** Ghi hồ sơ (3 lần ghi = 1 lỗ thẻ). */
@@ -1257,7 +1337,11 @@ export class Game {
    */
   private endShift(): void {
     const s = this.shift;
-    const atClock = inBox(this.player.pos, CLOCK_ZONE);
+    const multi = this.players.length > 1;
+    // Người còn trong ca (chưa chết, chưa rời phòng) phải có mặt ở máy chấm công
+    const present = this.players.filter((p) => p.alive && !p.gone);
+    const absent = present.filter((p) => !inBox(p.pos, CLOCK_ZONE));
+    const atClock = present.length > 0 && !absent.length;
     const reasons: string[] = [];
     let add = 0;
     // Việc được giao
@@ -1268,15 +1352,20 @@ export class Game {
     }
     if (!atClock) {
       add++;
-      reasons.push('Không chấm công lúc 06:00 (máy chấm công trong kho).');
+      reasons.push(multi ? `Không chấm công lúc 06:00: ${absent.map((p) => p.name).join(', ')}.` : 'Không chấm công lúc 06:00 (máy chấm công trong kho).');
     }
     // Ghi hồ sơ
     for (const o of s.orders) {
       if (!o.done && !o.late) o.late = true; // bỏ dở tới 06:00 cũng là trễ
       if (o.late && this.eventCfg.latePenalty) this.record(`Trễ hạn phiếu: ${orderText(o)}`);
     }
-    const lateIn = this.eventCfg.clockInRequired && (!this.player.clockedIn || this.player.lateIn);
-    if (lateIn) this.record(this.player.clockedIn ? 'Chấm công vào ca trễ.' : 'Không chấm công vào ca.');
+    let lateIn = false;
+    for (const p of present) {
+      if (!this.eventCfg.clockInRequired || (p.clockedIn && !p.lateIn)) continue;
+      lateIn = true;
+      const why = p.clockedIn ? 'Chấm công vào ca trễ.' : 'Không chấm công vào ca.';
+      this.record(multi ? `${p.name}: ${why.charAt(0).toLowerCase()}${why.slice(1)}` : why);
+    }
     const eatenValue = s.eaten.reduce((x, e) => x + e.price, 0);
     if (eatenValue > EAT_RECORD_OVER) this.record(`Ăn uống hàng chưa trả tiền quá ${formatPrice(EAT_RECORD_OVER)} (${formatPrice(eatenValue)}).`);
     const records = [...this.nightRecords];
@@ -1319,7 +1408,7 @@ export class Game {
       final,
       jobsTotal: s.jobs.length,
       jobsDone: s.jobsDone,
-      jobsLeft: left.map((j) => this.jobLabel(j)),
+      jobsLeft: left.map((j) => this.jobLabel(j) + (multi ? ` (${this.players.find((p) => p.id === j.who)?.name ?? j.who})` : '')),
       ordersTotal: s.orders.length,
       ordersDone: s.orders.filter((o) => o.done).length,
       late,
@@ -1342,14 +1431,17 @@ export class Game {
     };
     this.nightRecords = [];
     this.phase = final ? 'done' : 'eval';
-    if (dead) this.player.alive = false;
+    if (dead) for (const p of this.players) p.alive = false;
     this.events.push({ type: 'eval', ev });
   }
 
   /** Gọi sau khi người chơi đọc phiếu đánh giá có 3 lỗ. */
   terminate(): void {
     this.phase = 'shift';
-    this.die('holes');
+    this.players.forEach((p, i) => {
+      if (!p.gone) this.die('holes', i);
+    });
+    this.phase = 'dead';
   }
 
   private notes(): string[] {
@@ -1362,7 +1454,7 @@ export class Game {
     if (st.runSec >= 15) n.push(`Chạy trong siêu thị ${Math.round(st.runSec)} giây. Lý do khai báo: "bị dí".`);
     if (st.lightSpotted >= 2) n.push(`Rọi đèn pin vào kiểm kê viên ${st.lightSpotted} lần. Đề nghị tiết kiệm pin.`);
     if (st.drops >= 1) n.push(`Làm rơi ${st.drops} thùng hàng khi đang chạy. Hàng dễ vỡ, nhân viên thì không.`);
-    if (this.player.lateIn) n.push('Chấm công vào ca trễ. Phòng nghỉ không phải chỗ ngủ.');
+    if (this.players.some((p) => p.lateIn)) n.push('Chấm công vào ca trễ. Phòng nghỉ không phải chỗ ngủ.');
     const ate = this.shift.eaten.length;
     const ateBad = this.shift.eaten.filter((e) => e.bad).length;
     if (ate >= 3) n.push(`Ăn uống ${ate} món hàng trong ca. Siêu thị không phải căng tin.`);
@@ -1381,22 +1473,10 @@ export class Game {
 
   nextNight(): void {
     this.night++;
-    this.shift = new Shift(this.night, this.rng);
+    this.shift = new Shift(this.night, this.rng, this.players.length);
     this.auditor = this.makeAuditor();
-    this.player.pos = { ...PLAYER_SPAWN };
-    this.player.alive = true;
-    this.player.carry = null;
-    this.player.clockedIn = false;
-    this.player.lateIn = false;
-    this.player.stamina = 1;
-    this.player.exhausted = false;
-    this.player.hand = null;
-    this.player.sick = 0;
-    this.player.dizzy = 0;
-    this.player.bulky = null;
-    this.player.cart = null;
-    this.player.bags = 0;
-    this.player.sheet = false;
+    this.players = this.players.map((p, i) => ({ ...newPlayer(i, p.name), gone: p.gone, alive: !p.gone }));
+    this.player = this.players[0];
     this.breaker = null;
     this.lastHeavyAt = -999;
     this.nightRecords = [];

@@ -812,5 +812,94 @@ check(`Có ${COLD_UNITS.length} tủ lạnh bán hàng`, COLD_UNITS.length === 1
   check('Việc nặng được giao cách nhau ít nhất 70 phút', gaps.every((x) => x >= 70), heavyTimes.join(','));
 }
 
+// 19. Chơi 2 người (chơi mạng bản thử): việc chia cho từng người, Người Kiểm Kê bắt riêng từng người, chấm điểm cả nhóm
+{
+  const g = mkGame('Lan', { seed: 91, players: ['Lan', 'Minh'] });
+  check('2 người: có 2 nhân viên, mã p1 / p2', g.players.length === 2 && g.players[1].id === 'p2' && g.players[1].name === 'Minh');
+  const mine = (id: string) => g.shift.jobs.filter((j) => j.who === id).length;
+  const solo = mkGame('Lan', { seed: 91 }).shift.jobs.length;
+  check('2 người: mỗi người một danh sách việc, không ai rảnh', mine('p1') > 0 && mine('p2') > 0, `p1 ${mine('p1')}, p2 ${mine('p2')}`);
+  check('2 người: tổng việc nhiều hơn chơi một mình', g.shift.jobs.length > solo, `${g.shift.jobs.length} > ${solo}`);
+  check('2 người: chênh lệch số việc mỗi người không quá 2', Math.abs(mine('p1') - mine('p2')) <= 2);
+  check('2 người: đứng đầu ca hai chỗ khác nhau', dist(g.players[0].pos, g.players[1].pos) > 1);
+
+  // Làm việc thay mặt người thứ 2: thùng hàng nằm trong tay người đó, không phải người 1
+  g.as(1, () => g.takeBox());
+  check('as(1): người 2 ôm thùng, người 1 không', g.players[1].carry === 'dry' && g.players[0].carry === null);
+  check('as(): làm xong thì người thao tác trở về người 1', g.player === g.players[0]);
+
+  // Khiêng kiện 2 người thật: người cầm trước dẫn, kiện chỉ đi theo người dẫn
+  g.devGoNight(2);
+  g.devOrder('bulky');
+  const b = g.shift.bulky[0];
+  g.players[0].pos = { x: b.pos.x, z: b.pos.z - 1.3 };
+  g.players[1].pos = { x: b.pos.x, z: b.pos.z + 1.3 };
+  g.as(0, () => g.grabBulky(b.id));
+  const r2 = g.as(1, () => g.grabBulky(b.id));
+  check('Hai người thật cầm hai đầu kiện', r2.ok && b.carriers.join() === 'p1,p2' && g.players[1].bulky === b.id);
+  const before = { ...b.pos };
+  g.as(1, () => g.reportMotion(0.1, true, false));
+  check('Người cầm sau không kéo kiện đi chỗ khác', dist(before, b.pos) < 1e-6);
+  g.players[0].yaw = 0;
+  g.as(0, () => g.reportMotion(0.1, true, false));
+  check('Người cầm trước dẫn kiện', dist(before, b.pos) > 0.01);
+  g.as(0, () => g.releaseBulky());
+  check('Người dẫn buông: người kia còn giữ, thành người dẫn', b.carriers.join() === 'p2');
+  g.as(1, () => g.releaseBulky());
+
+  // Người Kiểm Kê đếm và bắt đúng người nó thấy (người 2), người 1 vẫn làm tiếp ca
+  const a = new Auditor(tuningForNight(1), mulberry32(3));
+  a.activate();
+  a.pos = { x: 10, z: 20 };
+  a.heading = a.beam = Math.PI / 2; // nhìn về phía đông (+x)
+  const seen = { pos: { x: 10.6, z: 20 }, alive: true };
+  const far = { pos: { x: 40, z: 30 }, alive: true };
+  for (let i = 0; i < 60; i++) a.update(1 / 60, [far, seen]);
+  check('Người Kiểm Kê đếm người nó thấy (người thứ 2)', a.state === 'count' && a.countWho === 1);
+  const ev = a.events.find((e) => e.type === 'count');
+  check('Sự kiện đếm ghi đúng người', !!ev && ev.type === 'count' && ev.who === 1);
+
+  const k = mkGame('Lan', { seed: 7, players: ['Lan', 'Minh'], events: { auditorStart: 0 } });
+  k.tick(0.1);
+  k.auditor.activate();
+  k.players[0].pos = { x: 25, z: 4.5 }; // phòng nghỉ
+  k.players[1].pos = { x: k.auditor.pos.x + 1.5, z: k.auditor.pos.z };
+  k.auditor.pos = { x: 30, z: 20 };
+  k.auditor.heading = k.auditor.beam = Math.PI / 2;
+  k.players[1].pos = { x: 30.7, z: 20 };
+  let deadEv: { who: string; name: string } | null = null;
+  for (let i = 0; i < 60 * 6 && !deadEv; i++) {
+    k.tick(1 / 60);
+    for (const e of k.events) if (e.type === 'dead') deadEv = e;
+    k.events.length = 0;
+  }
+  check('Bị đếm đủ: chết đúng người 2', !!deadEv && deadEv.who === 'p2' && deadEv.name === 'Minh' && !k.players[1].alive);
+  check('…người 1 vẫn sống, ca vẫn chạy', k.players[0].alive && k.phase === 'shift');
+
+  // 06:00: người còn sống phải có mặt ở máy chấm công; người đã chết không tính
+  const e2 = mkGame('Lan', { seed: 12, players: ['Lan', 'Minh'] });
+  const clock = { x: (CLOCK_ZONE.minX + CLOCK_ZONE.maxX) / 2, z: (CLOCK_ZONE.minZ + CLOCK_ZONE.maxZ) / 2 };
+  e2.devCompleteJobs();
+  e2.players[0].pos = { ...clock };
+  e2.players[1].pos = { x: 25, z: 4.5 };
+  e2.shift.minutes = 479.99;
+  e2.tick(0.5);
+  const ev2 = e2.events.find((e) => e.type === 'eval');
+  check('06:00: thiếu một người ở máy chấm công là bị lỗ', !!ev2 && ev2.type === 'eval' && !ev2.ev.atClock && ev2.ev.reasons.some((x) => x.includes('Minh')));
+
+  // Bản sao (máy người vào phòng): không tự chạy Người Kiểm Kê, không tự gây tiếng động
+  const m = mkGame('Minh', { seed: 91, players: ['Lan', 'Minh'] });
+  m.mirror = true;
+  m.player = m.players[1];
+  const st = m.auditor.state;
+  m.auditor.activate();
+  const ap = { ...m.auditor.pos };
+  for (let i = 0; i < 120; i++) m.tick(1 / 60);
+  m.noise({ x: 20, z: 20 }, 50, 0);
+  check('Bản sao không tự chạy Người Kiểm Kê', dist(ap, m.auditor.pos) < 1e-6 && st === 'idle');
+  check('Bản sao không tự gây tiếng động', !m.events.some((e) => e.type === 'noise'));
+  check('Bản sao vẫn cho đồng hồ chạy', m.shift.minutes > 0);
+}
+
 console.log(failed ? `\n${failed} kiểm tra thất bại.` : '\nTất cả kiểm tra đều đạt.');
 if (failed) throw new Error('sim-smoke failed');

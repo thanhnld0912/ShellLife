@@ -294,3 +294,15 @@ table.keys td:first-child { font: 700 .82rem var(--mono); color: var(--tag); whi
 #records i { width: .55rem; height: .55rem; border: 1.5px solid #6d675c; border-radius: 2px; }
 #records i.on { background: var(--stamp); border-color: var(--stamp); }
 #fps { position: absolute; left: 16px; top: 48px; font: 700 .72rem var(--mono); color: var(--ok); background: rgba(0,0,0,.5); padding: .15rem .4rem; border-radius: 3px; }
+
+/* ---- Chơi mạng: tạo / vào phòng, phòng chờ ---- */
+.mp { margin-top: .9rem; padding-top: .8rem; border-top: 1px dashed var(--line); display: grid; gap: .35rem; }
+.mp h3 { margin: 0; font-size: 1rem; color: var(--fluoro); }
+.mp h3 small { font: 500 .75rem var(--sans); color: var(--dim); margin-left: .4rem; }
+.mp .start-row input { text-transform: uppercase; letter-spacing: .25em; text-align: center; max-width: 9rem; }
+.room-code { font-family: var(--mono); letter-spacing: .2em; color: var(--tag); }
+.room-link { width: 100%; font: 500 .85rem var(--mono); padding: .45rem .6rem; background: var(--night); color: var(--fluoro); border: 1px solid var(--line); border-radius: 4px; }
+.lobby-list { margin: .3rem 0; padding-left: 1.4rem; display: grid; gap: .25rem; }
+.lobby-list li { font-weight: 600; }
+.lobby-list li small { color: var(--dim); font-weight: 400; margin-left: .4rem; }
+.lobby-list li.empty { color: var(--dim); font-weight: 400; font-style: italic; }
