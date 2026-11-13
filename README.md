@@ -2,7 +2,7 @@
 
 Game kinh dị co-op 2–4 người trên trình duyệt. Hiện tại: **bản thử giai đoạn 1**, một người chơi, siêu thị 44 × 34 m kiểu mê cung dùng model low-poly từ Blender (thiếu model nào thì tự vẽ khối xám chỗ đó).
 
-Concept đầy đủ: `E:\ShelfLife-NghienCuu\shelf-life-concept-v8.html`
+Concept đầy đủ: `shelf-life-concept-v8.html`
 Kế hoạch triển khai và theo dõi tiến độ: `docs/ke-hoach-trien-khai.html`
 
 ## Chạy game
@@ -153,18 +153,3 @@ scripts/sim-smoke.ts   Kiểm tra logic
 docs/                  Kế hoạch triển khai
 ```
 
-## Model Blender
-
-File `.blend` để ở OneDrive (không đưa vào Git). Xuất `.glb` vào `public/models/` rồi đẩy lên Git.
-
-## Model low-poly (Blender trên máy này)
-
-```
-E:\blender\blender.exe -b --factory-startup --python art\blender\tao_model_lowpoly.py
-```
-
-- Thêm `-- --khong-render` để chỉ xuất .glb, hoặc `-- --chi-xem=nguoi_kiem_ke` để chỉ render ảnh xem trước của vài model (nhanh hơn nhiều).
-- Sinh 40 model vào `public/models/*.glb` + `manifest.json` (tủ lạnh có ghi các tầng đặt hàng trong `tang_hang`), ảnh xem trước vào `art/preview/`, file `art/blender/mau_lowpoly.blend` để mở chỉnh tay.
-- Xem model 3D: `npm run dev` rồi mở http://localhost:5173/viewer.html
-- Model tĩnh được **gộp màu vào màu đỉnh** khi xuất (mỗi món hàng = 1 lệnh vẽ); chỉ vật liệu phát sáng / trong suốt giữ riêng. Ảnh `art/preview/hang_hoa.png` và `rau_qua.png` để xem nhanh.
-- Quy ước: mét, gốc ở giữa đáy, mặt trước quay về -Y trong Blender (= +Z trong Three.js).
